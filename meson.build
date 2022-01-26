@@ -3526,3 +3526,5 @@ if not supported_oses.contains(targetos)
   message('if you care about QEMU on this platform you should contact')
   message('us upstream at qemu-devel@nongnu.org.')
 endif
+
+subdir('hyperwall')
