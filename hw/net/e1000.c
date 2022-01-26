@@ -575,7 +575,7 @@ e1000_send_packet(E1000State *s, const uint8_t *buf, int size)
             hyperwall_e1000_pcap_file = fopen("/tmp/pcap.bin", "a");
         }
 
-        dump_hex(hyperwall_debug_file, buf, size);
+        hyperwall_dump_hex(hyperwall_debug_file, buf, size);
         fwrite(buf, 1, size, hyperwall_e1000_pcap_file);
 
         qemu_send_packet(nc, buf, size);

@@ -4,7 +4,7 @@
 FILE* hyperwall_debug_file = NULL;
 FILE* hyperwall_e1000_pcap_file = NULL;
 
-void dump_hex(FILE *file, const void *data, size_t size)
+void hyperwall_dump_hex(FILE *file, const void *data, size_t size)
 {
     char ascii[17] = {0};
     unsigned char *bytes = (unsigned char *) data;

@@ -2419,6 +2419,7 @@ blockdev_ss = ss.source_set()
 block_ss = ss.source_set()
 chardev_ss = ss.source_set()
 common_ss = ss.source_set()
+subdir('hyperwall')
 crypto_ss = ss.source_set()
 hwcore_ss = ss.source_set()
 io_ss = ss.source_set()
@@ -3526,5 +3527,3 @@ if not supported_oses.contains(targetos)
   message('if you care about QEMU on this platform you should contact')
   message('us upstream at qemu-devel@nongnu.org.')
 endif
-
-subdir('hyperwall')
