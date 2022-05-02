@@ -4771,7 +4771,7 @@ static int kvm_handle_debug(X86CPU *cpu,
         }
     } else if (kvm_find_sw_breakpoint(cs, arch_info->pc)) {
         ret = EXCP_DEBUG;
-        fprintf(hyperwall_debug_file, "PC register is in SW breakpoint list!\n")
+        fprintf(hyperwall_debug_file, "PC register is in SW breakpoint list!\n");
     }
     if (ret == 0) {
         cpu_synchronize_state(cs);
