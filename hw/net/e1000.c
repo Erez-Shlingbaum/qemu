@@ -566,15 +566,6 @@ e1000_send_packet(E1000State *s, const uint8_t *buf, int size)
     if (s->phy_reg[PHY_CTRL] & MII_CR_LOOPBACK) {
         qemu_receive_packet(nc, buf, size);
     } else {
-         if(hyperwall_debug_file == NULL)
-        {
-            hyperwall_debug_file = fopen("/tmp/debug.txt", "a");
-        }
-        if(hyperwall_e1000_pcap_file == NULL)
-        {
-            hyperwall_e1000_pcap_file = fopen("/tmp/pcap.bin", "a");
-        }
-
         hyperwall_dump_hex(hyperwall_debug_file, buf, size);
         fwrite(buf, 1, size, hyperwall_e1000_pcap_file);
 

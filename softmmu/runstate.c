@@ -60,6 +60,8 @@
 #include "sysemu/tpm.h"
 #include "trace.h"
 
+#include "hyperwall/utilities.h"
+
 static NotifierList exit_notifiers =
     NOTIFIER_LIST_INITIALIZER(exit_notifiers);
 
@@ -776,6 +778,8 @@ void qemu_init_subsystems(void)
 
     bdrv_init_with_whitelist();
     socket_init();
+
+    hyperwall_init();
 }
 
 

@@ -4,6 +4,12 @@
 FILE* hyperwall_debug_file = NULL;
 FILE* hyperwall_e1000_pcap_file = NULL;
 
+void hyperwall_init()
+{
+    hyperwall_debug_file = fopen("/tmp/debug.txt", "a");
+    hyperwall_e1000_pcap_file = fopen("/tmp/pcap.bin", "a");
+}
+
 void hyperwall_dump_hex(FILE *file, const void *data, size_t size)
 {
     char ascii[17] = {0};

@@ -6,6 +6,7 @@
 extern FILE* hyperwall_debug_file;
 extern FILE* hyperwall_e1000_pcap_file;
 
+void hyperwall_init();
 void hyperwall_dump_hex(FILE *file, const void *data, size_t size);
 
 #endif
