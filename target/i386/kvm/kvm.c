@@ -3705,7 +3705,8 @@ static int kvm_get_msrs(X86CPU *cpu)
             {
                 hyperwall_lstar = env->lstar;
                 hyperwall_was_lstar_init = true;
-                fprintf(hyperwall_debug_file, "MSR_LSTAR = %lu\n", env->lstar);
+                fprintf(hyperwall_debug_file, "MSR_LSTAR = %lu\n", hyperwall_lstar);
+                hyperwall_hook_init();
             }
             break;
 #endif
