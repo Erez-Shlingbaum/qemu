@@ -3,6 +3,8 @@
 
 FILE* hyperwall_debug_file = NULL;
 FILE* hyperwall_e1000_pcap_file = NULL;
+bool hyperwall_was_lstar_init = false;
+long unsigned int hyperwall_lstar = 0;
 
 void hyperwall_init()
 {

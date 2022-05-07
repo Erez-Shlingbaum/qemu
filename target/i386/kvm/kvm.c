@@ -3701,6 +3701,12 @@ static int kvm_get_msrs(X86CPU *cpu)
             break;
         case MSR_LSTAR:
             env->lstar = msrs[i].data;
+            if(env->lstar != 0 && hyperwall_was_lstar_init == false)
+            {
+                hyperwall_lstar = env->lstar;
+                hyperwall_was_lstar_init = true;
+                fprintf(hyperwall_debug_file, "MSR_LSTAR = %lu\n", env->lstar);
+            }
             break;
 #endif
         case MSR_IA32_TSC:
