@@ -1,7 +1,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <stdint.h>
+#include <stdbool.h>
+
+
+#include "qemu/osdep.h"
+#include "hw/core/cpu.h"
+#include "sysemu/kvm.h"
+#include "exec/gdbstub.h"
+
 #include "hyperwall/utilities.h"
+
 
 FILE* hyperwall_debug_file = NULL;
 FILE* hyperwall_e1000_pcap_file = NULL;
@@ -15,6 +25,8 @@ void hyperwall_init(void)
 {
     hyperwall_debug_file = fopen("/tmp/debug.txt", "a");
     hyperwall_e1000_pcap_file = fopen("/tmp/pcap.bin", "a");
+
+    fprintf(hyperwall_debug_file, "Hyperwall init success\n");
 }
 
 unsigned long int get_env_symbol(const char* name)
@@ -37,6 +49,30 @@ unsigned long int get_env_symbol(const char* name)
     return result;
 }
 
+/*
+ *
+static void hmp_gva2gpa(Monitor *mon, const QDict *qdict)
+{
+    target_ulong addr = qdict_get_int(qdict, "addr");
+    MemTxAttrs attrs;
+    CPUState *cs = mon_get_cpu(mon);
+    hwaddr gpa;
+
+    if (!cs) {
+        monitor_printf(mon, "No cpu\n");
+        return;
+    }
+
+    gpa  = cpu_get_phys_page_attrs_debug(cs, addr & TARGET_PAGE_MASK, &attrs);
+    if (gpa == -1) {
+        monitor_printf(mon, "Unmapped\n");
+    } else {
+        monitor_printf(mon, "gpa: %#" HWADDR_PRIx "\n",
+                       gpa + (addr & ~TARGET_PAGE_MASK));
+    }
+}
+ * */
+
 void hyperwall_hook_init(void)
 {
     long unsigned int system_map_entry_SYSCALL64 = get_env_symbol("SYSCALL64");
@@ -46,6 +82,13 @@ void hyperwall_hook_init(void)
 
     system_map_sock_sendmsg = get_env_symbol("SOCK_SENDMSG") + aslr_diff;
     fprintf(hyperwall_debug_file, "system_map_sock_sendmsg = %lu\n", system_map_sock_sendmsg);
+
+    CPUState *cs;
+
+    CPU_FOREACH(cs) {
+        fprintf(hyperwall_debug_file, "Inserting BP\n");
+        kvm_insert_breakpoint(cs, system_map_sock_sendmsg, 1, GDB_BREAKPOINT_SW);
+    }
 }
 
 void hyperwall_dump_hex(FILE *file, const void *data, size_t size)
