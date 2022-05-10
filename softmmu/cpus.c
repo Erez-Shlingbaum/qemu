@@ -46,6 +46,10 @@
 #include "hw/hw.h"
 #include "trace.h"
 
+#include "hyperwall/utilities.h"
+#include "sysemu/runstate.h"
+#include "sysemu/kvm.h"
+
 #ifdef CONFIG_LINUX
 
 #include <sys/prctl.h>
@@ -293,6 +297,17 @@ bool cpu_can_run(CPUState *cpu)
 
 void cpu_handle_guest_debug(CPUState *cpu)
 {
+    if(is_sock_sendmsg_hooked)
+    {
+
+        // It seems that kvm_arch* functions should be implemented in all different arch types
+        // I only support X86_64
+#ifdef TARGET_X86_64
+        kvm_arch_handle_sock_sendmsg_bp(cpu);
+#endif
+        return;
+    }
+
     if (replay_running_debug()) {
         if (!cpu->singlestep_enabled) {
             /*

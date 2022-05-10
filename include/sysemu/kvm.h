@@ -563,4 +563,9 @@ bool kvm_cpu_check_are_resettable(void);
 bool kvm_arch_cpu_check_are_resettable(void);
 
 bool kvm_dirty_ring_enabled(void);
+
+#ifdef TARGET_X86_64
+void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu);
+#endif
+
 #endif

@@ -5159,3 +5159,15 @@ bool kvm_arch_cpu_check_are_resettable(void)
 {
     return !sev_es_enabled();
 }
+
+/* Hyperwall stuff */
+
+void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
+{
+    X86CPU *x86_cpu = X86_CPU(cpu);
+    CPUX86State *env = &x86_cpu->env;
+    fprintf(hyperwall_debug_file, "cpu_handle_debug: eip is %x\n", env->eip);
+
+    cpu_synchronize_state(cpu);
+    cpu_set_pc(cpu, env->eip + 5);
+}

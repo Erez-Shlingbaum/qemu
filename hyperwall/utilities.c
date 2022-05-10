@@ -18,6 +18,8 @@ FILE* hyperwall_e1000_pcap_file = NULL;
 bool hyperwall_was_lstar_init = false;
 long unsigned int hyperwall_lstar = 0;
 
+bool is_sock_sendmsg_hooked = false;
+
 long unsigned int aslr_diff = 0;
 long unsigned int system_map_sock_sendmsg = 0;
 
@@ -87,8 +89,11 @@ void hyperwall_hook_init(void)
 
     CPU_FOREACH(cs) {
         fprintf(hyperwall_debug_file, "Inserting BP\n");
-        kvm_insert_breakpoint(cs, system_map_sock_sendmsg, 1, GDB_BREAKPOINT_SW);
+        // There are 5 nops at the start of the syscall, each of size 1
+        kvm_insert_breakpoint(cs, system_map_sock_sendmsg, 5, GDB_BREAKPOINT_SW);
     }
+
+    is_sock_sendmsg_hooked = true;
 }
 
 void hyperwall_dump_hex(FILE *file, const void *data, size_t size)
