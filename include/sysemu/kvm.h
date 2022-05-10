@@ -564,8 +564,10 @@ bool kvm_arch_cpu_check_are_resettable(void);
 
 bool kvm_dirty_ring_enabled(void);
 
-#ifdef TARGET_X86_64
+// This is in a comment because gcc does #pragma poison on this keyword
+// Since you should not use this in a non-arch specific file
+//#ifdef TARGET_X86_64
 void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu);
-#endif
+//#endif
 
 #endif
