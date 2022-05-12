@@ -5168,6 +5168,21 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
     CPUX86State *env = &x86_cpu->env;
     fprintf(hyperwall_debug_file, "cpu_handle_debug: eip is %x\n", env->eip);
 
+    // Advance the instruction point over the breakpoint
+    // Note that this specific breakpoing is on NOPs
     cpu_synchronize_state(cpu);
     cpu_set_pc(cpu, env->eip + 5);
+
+    // Do
+
+    /*
+     * In X64 function parameters are passed 1-RDI 2-RSI 3-RDX 4-RCX 5-R8 6-R9
+     * */
+//    struct msghdr *msg_hdr = env->regs[R_ESI];
+
+    char buf[512];
+    if (cpu_memory_rw_debug(cpu, env->regs[R_ESI], buf, sizeof(struct msghdr), 0) < 0)
+    {
+        fprintf(hyperwall_debug_file, "cpu_handle_debug: cpu_memory_rw_debug failed\n");
+    }
 }
