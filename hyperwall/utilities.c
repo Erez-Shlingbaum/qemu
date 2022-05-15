@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <memory.h>
 
 
 #include "qemu/osdep.h"
@@ -13,8 +14,8 @@
 #include "hyperwall/utilities.h"
 
 
-FILE* hyperwall_debug_file = NULL;
-FILE* hyperwall_e1000_pcap_file = NULL;
+FILE *hyperwall_debug_file = NULL;
+FILE *hyperwall_e1000_pcap_file = NULL;
 bool hyperwall_was_lstar_init = false;
 long unsigned int hyperwall_lstar = 0;
 
@@ -22,19 +23,44 @@ bool is_sock_sendmsg_hooked = false;
 
 long unsigned int aslr_diff = 0;
 long unsigned int system_map_sock_sendmsg = 0;
+long unsigned int system_map_inet_dgram_ops = 0;
+long unsigned int system_map_inet_stream_ops = 0;
+
+static unsigned long int get_env_symbol(const char *name);
+
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-prototypes"
+
+RB_HEAD(md5_hash_tree, md5_hash_tree_node) hyperwall_md5_hash_tree_head = RB_INITIALIZER(&hyperwall_md5_hash_tree_head);
+RB_GENERATE(md5_hash_tree, md5_hash_tree_node, entry, hyperwall_hash_comparator);
+
+#pragma GCC diagnostic pop
+
+int hyperwall_hash_comparator(struct md5_hash_tree_node *left, struct md5_hash_tree_node *right)
+{
+    return memcmp(left->hash, right->hash, 16ul);
+}
+
+void hyperwall_insert_md5_hash(struct md5_hash_tree_node *node)
+{
+    RB_INSERT(md5_hash_tree, &hyperwall_md5_hash_tree_head, node);
+}
 
 void hyperwall_init(void)
 {
     hyperwall_debug_file = fopen("/tmp/debug.txt", "a");
     hyperwall_e1000_pcap_file = fopen("/tmp/pcap.bin", "a");
 
+    setbuf(hyperwall_e1000_pcap_file, NULL);
+
     fprintf(hyperwall_debug_file, "Hyperwall init success\n");
 }
 
-unsigned long int get_env_symbol(const char* name)
+static unsigned long int get_env_symbol(const char *name)
 {
-    const char* env_string = getenv(name);
-    if(env_string == NULL)
+    const char *env_string = getenv(name);
+    if (env_string == NULL)
     {
         fprintf(hyperwall_debug_file, "%s env variable is not defined!\n", name);
         exit(1337);
@@ -42,7 +68,7 @@ unsigned long int get_env_symbol(const char* name)
 
     errno = 0;
     unsigned long int result = strtoul(env_string, NULL, 0);
-    if(errno != 0)
+    if (errno != 0)
     {
         fprintf(hyperwall_debug_file, "strtoul(%s) failed with %d\n", name, errno);
         exit(1338);
@@ -50,30 +76,6 @@ unsigned long int get_env_symbol(const char* name)
 
     return result;
 }
-
-/*
- *
-static void hmp_gva2gpa(Monitor *mon, const QDict *qdict)
-{
-    target_ulong addr = qdict_get_int(qdict, "addr");
-    MemTxAttrs attrs;
-    CPUState *cs = mon_get_cpu(mon);
-    hwaddr gpa;
-
-    if (!cs) {
-        monitor_printf(mon, "No cpu\n");
-        return;
-    }
-
-    gpa  = cpu_get_phys_page_attrs_debug(cs, addr & TARGET_PAGE_MASK, &attrs);
-    if (gpa == -1) {
-        monitor_printf(mon, "Unmapped\n");
-    } else {
-        monitor_printf(mon, "gpa: %#" HWADDR_PRIx "\n",
-                       gpa + (addr & ~TARGET_PAGE_MASK));
-    }
-}
- * */
 
 void hyperwall_hook_init(void)
 {
@@ -85,8 +87,16 @@ void hyperwall_hook_init(void)
     system_map_sock_sendmsg = get_env_symbol("SOCK_SENDMSG") + aslr_diff;
     fprintf(hyperwall_debug_file, "system_map_sock_sendmsg = %lu\n", system_map_sock_sendmsg);
 
-    CPUState *cs;
+    // 0xffffffff82346c40 D inet_dgram_ops
+    // 0xffffffff82346d20 D inet_stream_ops
 
+    system_map_inet_dgram_ops = get_env_symbol("INET_DGRAM_OPS") + aslr_diff;
+    fprintf(hyperwall_debug_file, "system_map_inet_dgram_ops = %lu\n", system_map_inet_dgram_ops);
+
+    system_map_inet_stream_ops = get_env_symbol("INET_STREAM_OPS") + aslr_diff;
+    fprintf(hyperwall_debug_file, "system_map_inet_stream_ops = %lu\n", system_map_inet_stream_ops);
+
+    CPUState *cs;
     CPU_FOREACH(cs) {
         fprintf(hyperwall_debug_file, "Inserting BP\n");
         // There are 5 nops at the start of the syscall, each of size 1
@@ -134,4 +144,6 @@ void hyperwall_dump_hex(FILE *file, const void *data, size_t size)
             }
         }
     }
+
+    fflush(file);
 }
