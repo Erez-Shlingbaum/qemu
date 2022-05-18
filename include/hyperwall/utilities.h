@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdbool.h>
+#include "crypto/hash.h"
 
 #include "hyperwall/bsd_tree.h"
 
@@ -30,7 +31,9 @@ struct md5_hash_tree_node
 };
 
 int hyperwall_hash_comparator(struct md5_hash_tree_node *left, struct md5_hash_tree_node *right);
+
 void hyperwall_insert_md5_hash(struct md5_hash_tree_node *node);
+bool hyperwall_contains_md5_hash(uint8_t* hash);
 
 extern struct md5_hash_tree hyperwall_md5_hash_tree_head;
 

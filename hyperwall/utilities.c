@@ -39,12 +39,21 @@ RB_GENERATE(md5_hash_tree, md5_hash_tree_node, entry, hyperwall_hash_comparator)
 
 int hyperwall_hash_comparator(struct md5_hash_tree_node *left, struct md5_hash_tree_node *right)
 {
+//    fprintf(hyperwall_debug_file, "hyperwall_hash_comparator: left=%p right=%p\n", left, right);
     return memcmp(left->hash, right->hash, 16ul);
 }
 
 void hyperwall_insert_md5_hash(struct md5_hash_tree_node *node)
 {
+//    fprintf(hyperwall_debug_file, "hyperwall_insert_md5_hash: node=%p\n", node);
     RB_INSERT(md5_hash_tree, &hyperwall_md5_hash_tree_head, node);
+}
+
+bool hyperwall_contains_md5_hash(uint8_t* hash)
+{
+    struct md5_hash_tree_node node;
+    node.hash = hash;
+    return RB_FIND(md5_hash_tree, &hyperwall_md5_hash_tree_head, &node) != NULL;
 }
 
 void hyperwall_init(void)
