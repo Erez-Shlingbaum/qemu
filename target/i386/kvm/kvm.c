@@ -5166,7 +5166,6 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
 {
     X86CPU *x86_cpu = X86_CPU(cpu);
     CPUX86State *env = &x86_cpu->env;
-//    fprintf(hyperwall_debug_file, "cpu_handle_debug: eip is %lx\n", env->eip);
 
     // Advance the instruction point over the breakpoint
     // Note that this specific breakpoint is on NOPs so there is no need to emulate anything
@@ -5179,58 +5178,35 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
     struct kernel_socket kernel_socket = {0};
     struct kernel_msghdr msg_hdr = {0};
 
-    if (cpu_memory_rw_debug(cpu, env->regs[R_EDI], &kernel_socket, sizeof(kernel_socket), 0) < 0)
-    {
-        fprintf(hyperwall_debug_file, "cpu_handle_debug: cpu_memory_rw_debug failed for R_EDI\n");
-        return;
-    }
+    // Read EDI register, which will contains the kernel socket struct
+    HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, env->regs[R_EDI], &kernel_socket, sizeof(kernel_socket), 0) < 0);
 
-    if(kernel_socket.ops != (void*)system_map_inet_dgram_ops && kernel_socket.ops != (void*)system_map_inet_stream_ops)
-    {
-//        fprintf(hyperwall_debug_file, "cpu_handle_debug: Ignoring packet!\n");
-        return;
-    }
-    fprintf(hyperwall_debug_file, "cpu_handle_debug: Got a UDP/TCP packet\n");
+    // Verify that ths udp && tcp ops pointer is the same in QEMU VM and in the one we got from env variable
+    // If it is the same, then it is also a TCP/UDP packet of course, so we process it.
+    HYPER_RETURN_IF(kernel_socket.ops != (void*)system_map_inet_dgram_ops && kernel_socket.ops != (void*)system_map_inet_stream_ops);
 
-    if (cpu_memory_rw_debug(cpu, env->regs[R_ESI], &msg_hdr, sizeof(msg_hdr), 0) < 0)
-    {
-        fprintf(hyperwall_debug_file, "cpu_handle_debug: cpu_memory_rw_debug failed for R_ESI\n");
-        return;
-    }
-    fprintf(hyperwall_debug_file, "cpu_handle_debug: msg_hdr.msg_iter.count = %lu\n", msg_hdr.msg_iter.nr_segs);
+    HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, env->regs[R_ESI], &msg_hdr, sizeof(msg_hdr), 0) < 0);
+    HYPER_DEBUG("cpu_handle_debug: msg_hdr.msg_iter.count = %lu\n", msg_hdr.msg_iter.nr_segs);
 
     struct kernel_iovec segments[msg_hdr.msg_iter.nr_segs];
-    if (cpu_memory_rw_debug(cpu, (target_ulong)msg_hdr.msg_iter.iov, segments, sizeof(struct kernel_iovec) * msg_hdr.msg_iter.nr_segs, 0) < 0)
-    {
-        fprintf(hyperwall_debug_file, "cpu_handle_debug: cpu_memory_rw_debug failed for iov\n");
-        return;
-    }
+    HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)msg_hdr.msg_iter.iov, segments, sizeof(struct kernel_iovec) * msg_hdr.msg_iter.nr_segs, 0) < 0);
 
     for (size_t i = 0; i < msg_hdr.msg_iter.nr_segs; ++i)
     {
         char segment_data[segments[i].iov_len];
-        if (cpu_memory_rw_debug(cpu, (target_ulong)segments[i].iov_base, segment_data, segments[i].iov_len, 0) < 0)
-        {
-            fprintf(hyperwall_debug_file, "cpu_handle_debug: cpu_memory_rw_debug failed for segment[%zu]\n", i);
-            return;
-        }
-//        fwrite(segment_data, 1, segments[i].iov_len, hyperwall_e1000_pcap_file);
+        HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)segments[i].iov_base, segment_data, segments[i].iov_len, 0) < 0);
 
         uint8_t *result_md5_hash = NULL;
         size_t hash_len = 0;
         Error *error = NULL;
-        if(qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, segment_data, segments[i].iov_len, &result_md5_hash, &hash_len, &error) < 0)
-        {
-            fprintf(hyperwall_debug_file, "cpu_handle_debug: cpu_memory_rw_debug md5 hash failed for segment[%zu]\n", i);
-            return;
-        }
+
+        HYPER_RETURN_IF(qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, segment_data, segments[i].iov_len, &result_md5_hash, &hash_len, &error) < 0);
 
         // Try to see which packets do I expect in e1000 later
-        fprintf(hyperwall_debug_file, "cpu_handle_debug: segment_data of size %d\n", segments[i].iov_len);
+        HYPER_DEBUG("cpu_handle_debug: segment_data of size %d\n", segments[i].iov_len);
         hyperwall_dump_hex(hyperwall_debug_file, segment_data, segments[i].iov_len);
 
-
-        fprintf(hyperwall_debug_file, "cpu_handle_debug: Inserting md5 hash to tree %p\n", result_md5_hash);
+        HYPER_DEBUG("cpu_handle_debug: Inserting md5 hash to tree %p\n", result_md5_hash);
         struct md5_hash_tree_node *node = g_malloc(sizeof(struct md5_hash_tree_node));
         node->hash = result_md5_hash;
         hyperwall_insert_md5_hash(node);

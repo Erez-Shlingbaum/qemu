@@ -37,6 +37,7 @@
 #include "qemu/iov.h"
 #include "qemu/module.h"
 #include "qemu/range.h"
+#include "qemu/bswap.h"
 
 #include "e1000x_common.h"
 #include "trace.h"
@@ -556,38 +557,126 @@ inc_tx_bcast_or_mcast_count(E1000State *s, const unsigned char *arr)
     }
 }
 
-// hyperwall structs
-struct hyperwall_iphdr
+///
+/// \param buffer ethernet + ip + udp/tcp packet
+/// \param packet_size size of the buffer
+/// \param result_user_data_size output size of extracted user data.
+/// \return Pointer to user data. NULL if packet is invalid
+static uint8_t *hyperwall_get_user_data_from_ip_packet(const uint8_t *buffer, const size_t packet_size, size_t *result_user_data_size)
 {
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-    unsigned int ihl:4;
-    unsigned int version:4;
-#elif __BYTE_ORDER == __BIG_ENDIAN
-    unsigned int version:4;
-    unsigned int ihl:4;
-#else
-# error        "Please fix <bits/endian.h>"
-#endif
-    u_int8_t tos;
-    u_int16_t tot_len;
-    u_int16_t id;
-    u_int16_t frag_off;
-    u_int8_t ttl;
-    u_int8_t protocol;
-    u_int16_t check;
-    u_int32_t saddr;
-    u_int32_t daddr;
-    /*The options start here. */
-};
+    HYPER_RETURN_VAL_IF(packet_size < sizeof(struct eth_header), NULL);
 
-struct udphdr
+    uint8_t *packet_data = NULL;
+    size_t data_size = 0;
+
+    // Get full size of ethernet including VLAN's, since we want the last ethernet/vlan frame
+    // Last field of ethernet/vlan is "uint16_t h_proto"
+    const uint32_t l2_size = eth_get_l2_hdr_length(buffer);
+    const uint16_t *proto_ptr = (uint16_t * )((buffer + l2_size) - sizeof(uint16_t));
+    const uint16_t eth_proto = be16_to_cpu(*proto_ptr);
+
+    switch (eth_proto)
+    {
+        case ETH_P_IP:
+        {
+            HYPER_DEBUG("eth_proto == IPV4");
+
+            struct ip_header *ip_header = PKT_GET_IP_HDR(buffer);
+            HYPER_DEBUG("IP_HEADER_VERSION = %u", IP_HEADER_VERSION(ip_header));
+
+            const size_t ip_header_len = IP_HDR_GET_LEN(ip_header);
+            HYPER_RETURN_VAL_IF(ip_header_len < sizeof(struct ip_header) || ip_header_len > packet_size, NULL);
+
+            const size_t ip_layer_total_len = be16_to_cpu(ip_header->ip_len);
+            const size_t eth_payload_len = packet_size - ETH_HLEN; // TODO: verify this check
+            HYPER_RETURN_VAL_IF(ip_layer_total_len < ip_header_len || ip_layer_total_len > eth_payload_len, NULL);
+
+            const uint8_t *transport_layer = (uint8_t *) ip_header + ip_header_len;
+
+            HYPER_DEBUG("ip_header_proto = %u", ip_header->ip_p);
+            switch (ip_header->ip_p)
+            {
+                case IP_PROTO_UDP:
+                {
+                    const udp_header *udp_ptr = (const udp_header *) transport_layer;
+                    packet_data = (uint8_t *) udp_ptr + sizeof(udp_header);
+                    data_size = be16_to_cpu(udp_ptr->uh_ulen) - sizeof(udp_header);
+//                    HYPER_RETURN_VAL_IF(data_size != (size_t)(packet_data - buffer), NULL);
+                    break;
+                }
+                case IP_PROTO_TCP:
+                {
+                    const tcp_header *tcp_ptr = (const tcp_header *) transport_layer;
+                    const size_t tcp_header_length = TCP_HEADER_DATA_OFFSET(tcp_ptr);
+                    HYPER_RETURN_VAL_IF(tcp_header_length < sizeof(tcp_header) || tcp_header_length > ip_layer_total_len, NULL);
+
+                    packet_data = (uint8_t *) tcp_ptr + tcp_header_length;
+                    data_size = ip_layer_total_len - tcp_header_length - ip_header_len;
+//                    HYPER_RETURN_VAL_IF(data_size != (size_t)(packet_data - buffer), NULL);
+                    break;
+                }
+                default:
+                {
+                    HYPER_DEBUG("ip_header->proto is not tcp or udp. ignoring. %u", IP_HDR_GET_P(ip_header));
+                }
+            }
+        }
+            break;
+        case ETH_P_ARP:
+        {
+            HYPER_DEBUG("eth_proto == ARP TODO. Ignoring");
+            return NULL;
+            // TODO
+            break;
+            // IPV6 / ETH_P_VLAN / ETH_P_DVLAN / ETH_P_NCSI ?
+        }
+        default:
+        {
+            HYPER_DEBUG("eth_proto == unknown! ignoring %u", eth_proto);
+            return NULL;
+        }
+    }
+
+    *result_user_data_size = data_size;
+    return packet_data;
+}
+
+// TODO: protect from ARP packets in kernel
+// TODO: move this code to qemu_send_packet()
+static void hyperwall_process_packet(E1000State *e1000_state, const uint8_t *buffer, const size_t packet_size)
 {
-    u_int16_t uh_sport;                /* source port */
-    u_int16_t uh_dport;                /* destination port */
-    u_int16_t uh_ulen;                /* udp length */
-    u_int16_t uh_sum;                /* udp checksum */
-};
+//    struct e1000_tx *tp = &e1000_state->tx;
 
+    size_t result_user_data_size = 0;
+    const uint8_t *user_data_ptr = hyperwall_get_user_data_from_ip_packet(buffer, packet_size, &result_user_data_size);
+    HYPER_RETURN_IF(user_data_ptr == NULL);
+
+    HYPER_DEBUG("PACKET PROCESS SUCCESS");
+
+    HYPER_DEBUG("extracted user data of size %zu:", result_user_data_size);
+    hyperwall_dump_hex(hyperwall_debug_file, user_data_ptr, result_user_data_size);
+
+    // TODO: make this code work
+//    uint8_t *result_md5_hash = NULL;
+//    size_t hash_len = 0;
+//    Error *error = NULL;
+//    if (qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, (char *) data, data_size, &result_md5_hash, &hash_len, &error) < 0)
+//    {
+//        fprintf(hyperwall_debug_file, "e1000_send_packet: md5 hash failed\n");
+//    }
+//    else
+//    {
+//        fprintf(hyperwall_debug_file, "HASH = %p size = %d\n", result_md5_hash, hash_len);
+//        fprintf(hyperwall_debug_file, "hyperwall_contains_md5_hash = %s\n", (hyperwall_contains_md5_hash(result_md5_hash) ? "true" : "false"));
+//        g_free(result_md5_hash);
+//
+//        // TODO: find max size to tree, and drop oldest hash or something
+//        // TODO: free that hash
+//        // TODO: DROP UDP and TCP packets that are not verified
+//
+//        // TODO: think if there is a possibly better protection, maybe when sending a packet
+//    }
+}
 
 static void
 e1000_send_packet(E1000State *s, const uint8_t *buf, int size)
@@ -599,86 +688,7 @@ e1000_send_packet(E1000State *s, const uint8_t *buf, int size)
     if (s->phy_reg[PHY_CTRL] & MII_CR_LOOPBACK) {
         qemu_receive_packet(nc, buf, size);
     } else {
-        fprintf(hyperwall_debug_file, "SEND PACKET buffer:\n");
-        hyperwall_dump_hex(hyperwall_debug_file, buf, size);
-//        fwrite(buf, 1, size, hyperwall_e1000_pcap_file);
-
-
-        // WRONG:
-        // Ethernet[12: 14] is type=IPv4 if it equals \x08\x00 (This is a bit of a hacky way to test it... I can do better later)
-        // Packet[14:] is IP header
-        // WHAT THEY MEAN is [12:14] is the size of the frame in octets. < 1500 means size, > means protocol type
-
-        // IPv4 ethernet packet
-        if (size > (14 + 20) && (uint16_t)((buf[13] << 8) + buf[12]) < 1500)
-        {
-            fprintf(hyperwall_debug_file, "TEST1:\n");
-            struct hyperwall_iphdr *ip_hdr = (struct hyperwall_iphdr *) (buf + 14);
-            // TODO assert ip_hdr->version ==4
-            const uint8_t* packet = (buf + 14 + ip_hdr->ihl * 4);
-
-
-            // Temporary, I want to currently ignore padded / packet with options
-            if (ip_hdr->ihl == 5)
-            {
-                uint8_t *data = NULL;
-                unsigned int data_size = 0;
-
-                // udp
-                if(ip_hdr->protocol == 17)
-                {
-                    fprintf(hyperwall_debug_file, "UDP PACKET\n");
-
-                    data = packet + sizeof(struct udphdr);
-                    data_size = ntohs(((struct udphdr*)packet)->uh_ulen) - sizeof(struct udphdr);
-//                    data_size = size - (data - buf);
-                    fprintf(hyperwall_debug_file, "data_size = %d:\n", data_size);
-                }
-                    // tcp
-                else if(ip_hdr->protocol == 6)
-                {
-                    fprintf(hyperwall_debug_file, "TCP PACKET\n");
-                }
-                else
-                {
-                    fprintf(hyperwall_debug_file, "NOT TCP AND NOT UDP\n");
-                }
-
-                if (data != NULL)
-                {
-                    fprintf(hyperwall_debug_file, "TEST5:\n");
-                    hyperwall_dump_hex(hyperwall_debug_file, data, data_size);
-
-                    uint8_t *result_md5_hash = NULL;
-                    size_t hash_len = 0;
-                    Error *error = NULL;
-                    if (qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, (char *) data, data_size, &result_md5_hash, &hash_len, &error) < 0)
-                    {
-                        fprintf(hyperwall_debug_file, "e1000_send_packet: md5 hash failed\n");
-                    }
-                    else
-                    {
-                        fprintf(hyperwall_debug_file, "HASH = %p size = %d\n", result_md5_hash, hash_len);
-                        fprintf(hyperwall_debug_file, "hyperwall_contains_md5_hash = %s\n", (hyperwall_contains_md5_hash(result_md5_hash) ? "true" : "false"));
-                        g_free(result_md5_hash);
-
-                        // TODO: find max size to tree, and drop oldest hash or something
-                        // TODO: free that hash
-                        // TODO: DROP UDP and TCP packets that are not verified
-
-                        // TODO: think if there is a possibly better protection, maybe when sending a packet
-                    }
-                }
-            }
-            else
-            {
-                fprintf(hyperwall_debug_file, "e1000_send_packet: IHL != 5\n");
-            }
-        }
-
-//
-
-
+        hyperwall_process_packet(s, buf, size);
         qemu_send_packet(nc, buf, size);
     }
     inc_tx_bcast_or_mcast_count(s, buf);

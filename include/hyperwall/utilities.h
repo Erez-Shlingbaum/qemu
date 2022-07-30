@@ -7,6 +7,22 @@
 
 #include "hyperwall/bsd_tree.h"
 
+#define HYPER_DEBUG(format, args...) fprintf(hyperwall_debug_file, "%s:%d:%s(): " format "\n", __FILE__, __LINE__, __func__, ##args)
+#define HYPER_RETURN_IF(condition)                  \
+    if(condition)                                   \
+    {                                               \
+        HYPER_DEBUG("RETURN_IF True: " #condition); \
+        return;                                     \
+    }
+
+#define HYPER_RETURN_VAL_IF(condition, value)                  \
+    if(condition)                                              \
+    {                                                          \
+        HYPER_DEBUG("RETURN_VAL_IF True: " #condition " | value = " #value); \
+        return value;                                          \
+    }
+
+
 extern FILE *hyperwall_debug_file;
 extern FILE *hyperwall_e1000_pcap_file;
 extern bool hyperwall_was_lstar_init;
@@ -33,7 +49,7 @@ struct md5_hash_tree_node
 int hyperwall_hash_comparator(struct md5_hash_tree_node *left, struct md5_hash_tree_node *right);
 
 void hyperwall_insert_md5_hash(struct md5_hash_tree_node *node);
-bool hyperwall_contains_md5_hash(uint8_t* hash);
+bool hyperwall_contains_md5_hash(uint8_t *hash);
 
 extern struct md5_hash_tree hyperwall_md5_hash_tree_head;
 
@@ -55,7 +71,7 @@ struct kernel_socket
     void *file;
     void *sk;
     const void *ops;
-//    struct socket_wq wq; not relevant
+//    struct socket_wq wq; not relevant to this research
 };
 
 struct kernel_iovec
