@@ -568,6 +568,7 @@ bool kvm_dirty_ring_enabled(void);
 // Since you should not use this in a non-arch specific file
 //#ifdef TARGET_X86_64
 void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu);
+void kvm_arch_handle_arp_xmit_bp(CPUState *cpu);
 //#endif
 
 #endif

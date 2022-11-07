@@ -297,13 +297,27 @@ bool cpu_can_run(CPUState *cpu)
 
 void cpu_handle_guest_debug(CPUState *cpu)
 {
-    if(is_sock_sendmsg_hooked)
+    if(hyperwall_is_hooks_on)
     {
 
         // It seems that kvm_arch* functions should be implemented in all different arch types
         // I only support X86_64
 #ifdef TARGET_X86_64
-        kvm_arch_handle_sock_sendmsg_bp(cpu);
+        X86CPU *x86_cpu = X86_CPU(cpu);
+        CPUX86State *env = &x86_cpu->env;
+        cpu_synchronize_state(cpu);
+
+//        HYPER_DEBUG("ENV EIP = 0x%x", env->eip);
+//        HYPER_DEBUG("system_map_sock_sendmsg = 0x%x", system_map_sock_sendmsg);
+//        HYPER_DEBUG("system_map_arp_xmit = 0x%x", system_map_arp_xmit);
+        if(env->eip == system_map_sock_sendmsg)
+        {
+            kvm_arch_handle_sock_sendmsg_bp(cpu);
+        }
+        else if(env->eip == system_map_arp_xmit)
+        {
+            kvm_arch_handle_arp_xmit_bp(cpu);
+        }
 #endif
         return;
     }

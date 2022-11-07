@@ -5162,6 +5162,61 @@ bool kvm_arch_cpu_check_are_resettable(void)
 
 /* Hyperwall stuff */
 
+// TODO:
+void kvm_arch_handle_arp_xmit_bp(CPUState *cpu)
+{
+    HYPER_DEBUG("kvm_arch_handle_arp_xmit_bp");
+
+    X86CPU *x86_cpu = X86_CPU(cpu);
+    CPUX86State *env = &x86_cpu->env;
+
+    // Advance the instruction point over the breakpoint
+    // Note that this specific breakpoint is on NOPs so there is no need to emulate anything
+    cpu_synchronize_state(cpu);
+    cpu_set_pc(cpu, env->eip + 5);
+
+    struct sk_buff kernel_sk_buff = {0};
+    /*
+     * In X64 function parameters are passed 1-RDI 2-RSI 3-RDX 4-RCX 5-R8 6-R9
+     * */
+    // Read EDI register, which will contains the skb_buffer
+    HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, env->regs[R_EDI], &kernel_sk_buff, sizeof(kernel_sk_buff), 0) < 0);
+    HYPER_DEBUG("PARSED ARP from skb at %u", env->regs[R_EDI]);
+    // TODO: add verification for next == NULL && prev == NULL
+
+//    HYPER_DEBUG("kernel_sk_buff.next = %u", kernel_sk_buff.next);
+//    HYPER_DEBUG("kernel_sk_buff.prev = %u", kernel_sk_buff.prev);
+
+//HYPER_DEBUG("kernel_sk_buff.len = %u", kernel_sk_buff.len);
+    HYPER_DEBUG("kernel_sk_buff.data_len = %u", kernel_sk_buff.data_len);
+//    HYPER_DEBUG("kernel_sk_buff.mac_len = %u", kernel_sk_buff.mac_len);
+    HYPER_DEBUG("kernel_sk_buff.data = %u", kernel_sk_buff.data);
+    HYPER_DEBUG("kernel_sk_buff.tail = %u", kernel_sk_buff.tail);
+//    HYPER_DEBUG("kernel_sk_buff.end = %u", kernel_sk_buff.end);
+//    HYPER_DEBUG("kernel_sk_buff.head = %u", kernel_sk_buff.head);
+//    HYPER_DEBUG("kernel_sk_buff.truesize = %u", kernel_sk_buff.truesize);
+
+    hyperwall_dump_hex(hyperwall_debug_file, &kernel_sk_buff, sizeof(kernel_sk_buff));
+
+    // kernel_sk_buff.data - kernel_sk_buff.tail == boundaried of data!
+    uint8_t buffer[kernel_sk_buff.tail];
+    HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)kernel_sk_buff.data, buffer, kernel_sk_buff.tail, 0) < 0);
+    HYPER_DEBUG("ARP--> dump of data->tail");
+    hyperwall_dump_hex(hyperwall_debug_file, buffer, kernel_sk_buff.tail);
+
+    // Do MD5 stuff. TODO put in function hash_and_insert_to_tree()
+    uint8_t *result_md5_hash = NULL;
+    size_t hash_len = 0;
+    Error *error = NULL;
+
+    // Allocated result_md5_hash pointer, should be freed with g_free
+    HYPER_RETURN_IF(qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, buffer, kernel_sk_buff.tail, &result_md5_hash, &hash_len, &error) < 0);
+
+    HYPER_DEBUG("Inserting ARP md5 hash to tree %p\n", result_md5_hash);
+    hyperwall_insert_md5_hash(result_md5_hash);
+    // result_md5_hash needs to be freed with g_free
+}
+
 void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
 {
     X86CPU *x86_cpu = X86_CPU(cpu);
@@ -5183,33 +5238,85 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
 
     // Verify that ths udp && tcp ops pointer is the same in QEMU VM and in the one we got from env variable
     // If it is the same, then it is also a TCP/UDP packet of course, so we process it.
-    HYPER_RETURN_IF(kernel_socket.ops != (void*)system_map_inet_dgram_ops && kernel_socket.ops != (void*)system_map_inet_stream_ops);
+//    HYPER_DEBUG("kernel_socket.ops = %p\n", kernel_socket.ops);
+//    HYPER_RETURN_IF_NO_LOG(kernel_socket.ops != (void*)system_map_inet_dgram_ops && kernel_socket.ops != (void*)system_map_inet_stream_ops);
+
+//    HYPER_DEBUG("SOCKET.OPS ADDRESS IN SYSMAP = %p", kernel_socket.ops - hyperwall_kaslr_diff);
+//    HYPER_DEBUG("kernel_socket.state = %u", kernel_socket.state);
+//    HYPER_DEBUG("kernel_socket.type = %d", kernel_socket.type);
+//    HYPER_DEBUG("kernel_socket.flags = %u", kernel_socket.flags);
+
+    //// Summery of the problem
+    //// send_msg is called before any transport / link layer stuff happens
+    //// Thus, we capture only the user mode packet right before it is being sent!
+    //// In DHCP, the packet contains UDP / DATA (Maybe IP and I did not notice as well)
+    //// e1000 gets an Ether / IP / udp|tcp / DATA packet
+    //// In this case, the hash should be only computed on UDP / IP
+    //// In other cases of raw socket, it should include the Ether as well
+    //// Solution: put a hook after all layers finish handling user packet
+    ////  and hash that, and just hash all of the packet in e1000
+    //// Problem, maybe "harder" to test this solution as a rootkit driver needs to actually put a packet directly to e1000 memory
+    //// Problem, sendmsg is a syscall and called from usermode, will my suggested hook work will all packets?
+    //// It should, because current solutions check all e1000 packets anyway...
+
+    // Ignore packets that are not udp / tcp / raw socket
+    if (kernel_socket.ops != (void *) system_map_inet_dgram_ops &&
+        kernel_socket.ops != (void *) system_map_inet_stream_ops &&
+        kernel_socket.ops != (void *) system_map_inet_sockraw_ops
+            )
+    {
+        return;
+    }
+
+//    if(kernel_socket.ops == (void*)system_map_inet_sockraw_ops)
+//    {
+//        HYPER_DEBUG("RAW SOCKET");
+//    }
 
     HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, env->regs[R_ESI], &msg_hdr, sizeof(msg_hdr), 0) < 0);
-    HYPER_DEBUG("cpu_handle_debug: msg_hdr.msg_iter.count = %lu\n", msg_hdr.msg_iter.nr_segs);
+    HYPER_DEBUG("msg_hdr.msg_iter.count = %lu\n", msg_hdr.msg_iter.nr_segs);
 
     struct kernel_iovec segments[msg_hdr.msg_iter.nr_segs];
     HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)msg_hdr.msg_iter.iov, segments, sizeof(struct kernel_iovec) * msg_hdr.msg_iter.nr_segs, 0) < 0);
 
+    // For each segment, read to buffer and hash it
     for (size_t i = 0; i < msg_hdr.msg_iter.nr_segs; ++i)
     {
         char segment_data[segments[i].iov_len];
         HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)segments[i].iov_base, segment_data, segments[i].iov_len, 0) < 0);
 
-        uint8_t *result_md5_hash = NULL;
-        size_t hash_len = 0;
-        Error *error = NULL;
+        HYPER_DEBUG("segments[%u].iov_base = %p", i, segments[i].iov_base);
 
-        HYPER_RETURN_IF(qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, segment_data, segments[i].iov_len, &result_md5_hash, &hash_len, &error) < 0);
+        // TODO: maybe support dgram as well. or just always read proto and check for ICMP
+        if(kernel_socket.ops == (void*)system_map_inet_sockraw_ops)
+        {
+            HYPER_DEBUG("RAW PACKET, CHECKING IF ICMP proto");
+//            const size_t sock_struct_size = 768;
+            size_t sk_protocol_offset = 532;
+            uint16_t sk_protocol = 0;
 
+            uint8_t* proto_addr = (uint8_t*)kernel_socket.sk + sk_protocol_offset;
+            HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)proto_addr, &sk_protocol, sizeof(sk_protocol), 0) < 0);
+            HYPER_DEBUG("PROTO = %u", sk_protocol);
+
+            if(sk_protocol == IPPROTO_ICMP) // 1
+            {
+                HYPER_DEBUG("ICMP!!!");
+                const size_t ICMP_HDR_SIZE = 8;
+                uint8_t *md5_hash = hyperwall_hash(segment_data + ICMP_HDR_SIZE, segments[i].iov_len - ICMP_HDR_SIZE);
+                HYPER_DEBUG("Inserting md5 hash to tree %p\n", md5_hash);
+                hyperwall_insert_md5_hash(md5_hash);
+                continue;
+            }
+        }
+
+        uint8_t *md5_hash = hyperwall_hash(segment_data, segments[i].iov_len);
         // Try to see which packets do I expect in e1000 later
-        HYPER_DEBUG("cpu_handle_debug: segment_data of size %d\n", segments[i].iov_len);
+        HYPER_DEBUG("segment_data of size %zu\n", segments[i].iov_len);
         hyperwall_dump_hex(hyperwall_debug_file, segment_data, segments[i].iov_len);
 
-        HYPER_DEBUG("cpu_handle_debug: Inserting md5 hash to tree %p\n", result_md5_hash);
-        struct md5_hash_tree_node *node = g_malloc(sizeof(struct md5_hash_tree_node));
-        node->hash = result_md5_hash;
-        hyperwall_insert_md5_hash(node);
+        HYPER_DEBUG("Inserting md5 hash to tree %p\n", md5_hash);
+        hyperwall_insert_md5_hash(md5_hash);
         // result_md5_hash needs to be freed with g_free
     }
 }
