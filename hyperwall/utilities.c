@@ -10,7 +10,7 @@
 #include "hw/core/cpu.h"
 #include "sysemu/kvm.h"
 #include "exec/gdbstub.h"
-
+#include "crypto/hash.h"
 #include "hyperwall/utilities.h"
 
 
@@ -35,8 +35,9 @@ static unsigned long int get_env_symbol(const char *name);
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-prototypes"
 
-RB_HEAD(md5_hash_tree, hyperwall_md5_hash_tree_node) hyperwall_md5_hash_tree_head = RB_INITIALIZER(&hyperwall_md5_hash_tree_head);
-RB_GENERATE(md5_hash_tree, hyperwall_md5_hash_tree_node, rb_entry, hyperwall_hash_comparator);
+RB_HEAD(md5_hash_tree, hyperwall_md5_hash_tree_node)hyperwall_md5_hash_tree_head = RB_INITIALIZER(&hyperwall_md5_hash_tree_head);
+        RB_GENERATE(md5_hash_tree, hyperwall_md5_hash_tree_node, rb_entry, hyperwall_hash_comparator
+);
 
 #pragma GCC diagnostic pop
 
@@ -188,7 +189,8 @@ void hyperwall_hook_init(void)
     fprintf(hyperwall_debug_file, "system_map_arp_xmit = %lu\n", system_map_arp_xmit);
 
     CPUState *cs;
-    CPU_FOREACH(cs) {
+    CPU_FOREACH(cs)
+    {
         fprintf(hyperwall_debug_file, "Inserting BP\n");
         // There are 5 nops at the start of the syscall, each of size 1
         kvm_insert_breakpoint(cs, system_map_sock_sendmsg, 5, GDB_BREAKPOINT_SW);

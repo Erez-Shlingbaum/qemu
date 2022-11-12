@@ -87,6 +87,8 @@ uint8_t *hyperwall_hash(const uint8_t *buffer, size_t len);
 /// \return true if hash was in tree, false if not
 bool hyperwall_consume_md5_hash(uint8_t *hash);
 
+bool hyperwall_process_packet(const uint8_t *buffer, const size_t packet_size);
+
 
 void hyperwall_insert_md5_hash(uint8_t *hash);
 void hyperwall_remove_md5_hash(uint8_t *hash);
