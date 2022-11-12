@@ -557,116 +557,12 @@ inc_tx_bcast_or_mcast_count(E1000State *s, const unsigned char *arr)
     }
 }
 
-///
-/// \param buffer ethernet + ip + udp/tcp packet
-/// \param packet_size size of the buffer
-/// \param result_user_data_size output size of extracted user data.
-/// \return Pointer to user data. NULL if packet is invalid
-static uint8_t *hyperwall_get_user_data_from_ip_packet(const uint8_t *buffer, const size_t packet_size, size_t *result_user_data_size)
-{
-    HYPER_RETURN_VAL_IF(packet_size < sizeof(struct eth_header), NULL);
-
-    uint8_t *packet_data = NULL;
-    size_t data_size = 0;
-
-    // Get full size of ethernet including VLAN's, since we want the last ethernet/vlan frame
-    // Last field of ethernet/vlan is "uint16_t h_proto"
-    const uint32_t l2_size = eth_get_l2_hdr_length(buffer);
-    eth_pkt_types_e eth_type = get_eth_packet_type(PKT_GET_ETH_HDR(buffer));
-    // Or is_broadcast_ether_addr
-    // if raw_socket what else can happen? TODO check this using scapy inside vm
-    // if raw_socket && broadcast, is this different then a usual raw socket packet? what if we send raw socket ethernet packets, and not just ip udp
-    HYPER_DEBUG("l2_size: %u eth_type %u", l2_size, eth_type);
-    // This takes the last 2 bytes, since I don't know how many ethernet / vlan are before
-    const uint16_t *proto_ptr = (uint16_t * )((buffer + l2_size) - sizeof(uint16_t));
-    const uint16_t eth_proto = be16_to_cpu(*proto_ptr);
-
-    switch (eth_proto)
-    {
-        case ETH_P_IP:
-        {
-            HYPER_DEBUG("eth_proto == IPV4");
-
-            struct ip_header *ip_header = PKT_GET_IP_HDR(buffer);
-            HYPER_DEBUG("IP_HEADER_VERSION = %u", IP_HEADER_VERSION(ip_header));
-
-            const size_t ip_header_len = IP_HDR_GET_LEN(ip_header);
-            HYPER_RETURN_VAL_IF(ip_header_len < sizeof(struct ip_header) || ip_header_len > packet_size, NULL);
-
-            const size_t ip_layer_total_len = be16_to_cpu(ip_header->ip_len);
-            const size_t eth_payload_len = packet_size - ETH_HLEN; // TODO: verify this check
-            HYPER_RETURN_VAL_IF(ip_layer_total_len < ip_header_len || ip_layer_total_len > eth_payload_len, NULL);
-
-            const uint8_t *transport_layer = (uint8_t *) ip_header + ip_header_len;
-
-            HYPER_DEBUG("ip_header_proto = %u", ip_header->ip_p);
-            HYPER_DEBUG("IPv4 src 0x%x dst 0x%x", ip_header->ip_src, ip_header->ip_dst);
-            switch (ip_header->ip_p)
-            {
-                case IP_PROTO_UDP:
-                {
-                    const udp_header *udp_ptr = (const udp_header *) transport_layer;
-                    packet_data = (uint8_t *) udp_ptr + sizeof(udp_header);
-                    data_size = be16_to_cpu(udp_ptr->uh_ulen) - sizeof(udp_header);
-//                    HYPER_RETURN_VAL_IF(data_size != (size_t)(packet_data - buffer), NULL);
-                    HYPER_DEBUG("UDP src port %u dst port %u", be16_to_cpu(udp_ptr->uh_sport), be16_to_cpu(udp_ptr->uh_dport));
-                    break;
-                }
-                case IP_PROTO_TCP:
-                {
-                    const tcp_header *tcp_ptr = (const tcp_header *) transport_layer;
-                    const size_t tcp_header_length = TCP_HEADER_DATA_OFFSET(tcp_ptr);
-                    HYPER_RETURN_VAL_IF(tcp_header_length < sizeof(tcp_header) || tcp_header_length > ip_layer_total_len, NULL);
-
-                    packet_data = (uint8_t *) tcp_ptr + tcp_header_length;
-                    data_size = ip_layer_total_len - tcp_header_length - ip_header_len;
-//                    HYPER_RETURN_VAL_IF(data_size != (size_t)(packet_data - buffer), NULL);
-                    HYPER_DEBUG("TCP src port %u dst port %u", be16_to_cpu(tcp_ptr->th_sport), be16_to_cpu(tcp_ptr->th_dport));
-                    break;
-                }
-                default:
-                {
-                    HYPER_DEBUG("ip_header->proto is not tcp or udp. ignoring. %u", IP_HDR_GET_P(ip_header));
-                }
-            }
-        }
-            break;
-        case ETH_P_ARP:
-        {
-            HYPER_DEBUG("eth_proto == ARP TODO. Ignoring");
-            return NULL;
-            // TODO
-            break;
-            // IPV6 / ETH_P_VLAN / ETH_P_DVLAN / ETH_P_NCSI ?
-        }
-        default:
-        {
-            if(eth_proto == ETH_P_IPV6)
-            {
-                HYPER_DEBUG("eth_proto == IPV6. Ignoring");
-            }
-            else
-            {
-                HYPER_DEBUG("eth_proto == unknown! ignoring %u", eth_proto);
-            }
-            return NULL;
-        }
-    }
-
-    *result_user_data_size = data_size;
-    return packet_data;
-}
-
 // TODO: protect from ARP packets in kernel
 // TODO: move this code to qemu_send_packet()
-static void hyperwall_process_packet(E1000State *e1000_state, const uint8_t *buffer, const size_t packet_size)
+///
+/// \return true if packet OK, false if malicious
+static bool hyperwall_process_packet(const uint8_t *buffer, const size_t packet_size)
 {
-//    struct e1000_tx *tp = &e1000_state->tx;
-
-//    size_t result_user_data_size = 0;
-//    const uint8_t *user_data_ptr = NULL;
-//    const uint8_t *user_data_ptr = hyperwall_get_user_data_from_ip_packet(buffer, packet_size, &result_user_data_size);
-//    HYPER_RETURN_IF(user_data_ptr == NULL);
     const struct iovec iov = {
             .iov_base = (void *) buffer,
             .iov_len = packet_size
@@ -690,16 +586,10 @@ static void hyperwall_process_packet(E1000State *e1000_state, const uint8_t *buf
     eth_get_protocols(&iov, 1, &isip4, &isip6, &isudp, &istcp, &l3hdr_off, &l4hdr_off, &l5hdr_off, &ip6hdr_info, &ip4hdr_info, &l4hdr_info);
     HYPER_DEBUG("PACKET PROCESS SUCCESS");
 
-    HYPER_RETURN_IF(isip6);
+    // IPv6 is not supported yet
+    HYPER_RETURN_VAL_IF(isip6, true);
 
     const size_t l2hdr_len = eth_get_l2_hdr_length_iov(&iov, 1);
-
-//    size_t user_data_size = 0;
-//    uint8_t* user_data = hyperwall_get_user_data_from_ip_packet(buffer, packet_size, &user_data_size);
-//    // Should never fail parsing an IP packet
-//    HYPER_ASSERT(user_data != NULL);
-
-//    x.hdr.udp.x
 
     // Try to hash layers top down
     if(isip4)
@@ -722,19 +612,19 @@ static void hyperwall_process_packet(E1000State *e1000_state, const uint8_t *buf
             // NOTE: This calculation will remove unneeded padding!
             uint8_t *result_md5_hash = NULL;
             const size_t l5_len = ip_len - IP_HDR_GET_LEN(ip_hdr) - l4_len; // Total ip packet len - sizeof(ip_header) - sizeof(transport_layer)
-            HYPER_DEBUG("ip_len = %u IP_HDR_GET_LEN = %u l4_len = %u l5_len = %u", ip_len, IP_HDR_GET_LEN(ip_hdr), l4_len, l5_len);
+            HYPER_DEBUG("ip_len = %hu IP_HDR_GET_LEN = %zu l4_len = %hu l5_len = %zu", ip_len, (size_t)IP_HDR_GET_LEN(ip_hdr), l4_len, l5_len);
 
             // NOTE: We decided to allow transport layer packets generated with no data layer
             // note that an attacker can use this to send whatever stuff he wants in lower layers, which is fine since old hyperwall paper does the same
             // Only data validation
-            HYPER_RETURN_IF(l5_len == 0);
-            HYPER_DEBUG("l5hdr_off = %u l5_len = %u", l5hdr_off, l5_len);
+            HYPER_RETURN_VAL_IF(l5_len == 0, true);
+            HYPER_DEBUG("l5hdr_off = %zu l5_len = %zu", l5hdr_off, l5_len);
             HYPER_DEBUG("Trying layer5");
             result_md5_hash = hyperwall_hash(buffer + l5hdr_off, l5_len);
             if(hyperwall_consume_md5_hash(result_md5_hash))
             {
                 HYPER_DEBUG("Packet is layer5");
-                return;
+                return true;
             }
 
             /* Handle raw packet stuff below. Note that my calculations avoid including paddings that were added to the end of the packet */
@@ -745,7 +635,7 @@ static void hyperwall_process_packet(E1000State *e1000_state, const uint8_t *buf
             if(hyperwall_consume_md5_hash(result_md5_hash))
             {
                 HYPER_DEBUG("Packet is layer4 raw socket");
-                return;
+                return true;
             }
 
             // IP layer and above
@@ -754,7 +644,7 @@ static void hyperwall_process_packet(E1000State *e1000_state, const uint8_t *buf
             if(hyperwall_consume_md5_hash(result_md5_hash))
             {
                 HYPER_DEBUG("Packet is layer3 raw socket");
-                return;
+                return true;
             }
 
             // Link layer and above
@@ -763,7 +653,7 @@ static void hyperwall_process_packet(E1000State *e1000_state, const uint8_t *buf
             if(hyperwall_consume_md5_hash(result_md5_hash))
             {
                 HYPER_DEBUG("Packet is layer2 raw socket");
-                return;
+                return true;
             }
         }
         else // No UDP / TCP headers
@@ -780,18 +670,10 @@ static void hyperwall_process_packet(E1000State *e1000_state, const uint8_t *buf
             if(hyperwall_consume_md5_hash(result_md5_hash))
             {
                 HYPER_DEBUG("Packet is ICMP");
-                return;
+                return true;
             }
 
-            HYPER_DEBUG("WARNING WEIRD CODE");
-            // TODO: Do I even need this? TODO decide
-//            uint8_t *result_md5_hash = hyperwall_hash(buffer + l3hdr_off, ip_len);
-//            HYPER_DEBUG("Trying ICMP");
-//            if(hyperwall_consume_md5_hash(result_md5_hash))
-//            {
-//                HYPER_DEBUG("Packet is ICMP");
-//                return;
-//            }
+            HYPER_DEBUG("Packet is NOT ICMP!");
         }
     }
     else // Not IPv4. Since we asserted !ipv6 then this must be ARP
@@ -803,77 +685,18 @@ static void hyperwall_process_packet(E1000State *e1000_state, const uint8_t *buf
         if(hyperwall_consume_md5_hash(result_md5_hash))
         {
             HYPER_DEBUG("Packet is ARP and in tree!");
-            return;
+            return true;
         }
     }
 
 
-//    int proto;
-//    proto = eth_get_l3_proto(&iov, 1, l2hdr_len);
-//
-//    // TODO: new algorithm
-//    //  Try extract_user_data() and if not working, then try all other layers... as we might encounter a raw packet
-//
-//    // TODO ARP!
-////    HYPER_RETURN_IF(((proto == ETH_P_ARP) || isip6) && "TODO arp in e1000");
-//    HYPER_RETURN_IF(isip6);
-//
-//    if(proto == ETH_P_ARP)
-//    {
-//        HYPER_DEBUG("ARP in e1000:");
-//        hyperwall_dump_hex(hyperwall_debug_file, buffer, l2hdr_len);
-////        const uint8_t *arp_begin = buffer + l3hdr_off;
-//        const uint8_t *arp_begin = buffer; // TODO: fix if needed. Current arp_xmit hook hashes all packet. This can be fixed with a skip of 16 (sizeof Ether) bytes before hashing
-////        const size_t arp_len = (size_t)(packet_size - l3hdr_off) + 1;
-//        const size_t arp_len = 16 + 28; // Ether size + Known ARP packet size...
-//        HYPER_DEBUG("MD5 on ARP arp_begin = %u l3hdr_off = %u packet_size = %u arp_len = %u:", arp_begin, l3hdr_off, packet_size, arp_len);
-//        hyperwall_dump_hex(hyperwall_debug_file, arp_begin, arp_len);
-//
-//        uint8_t *result_md5_hash = hyperwall_hash(arp_begin, arp_len);
-//
-//        if(hyperwall_consume_md5_hash(result_md5_hash))
-//        {
-//            return;
-//        }
-//
-//        // TODO: rootkit
-//        HYPER_DEBUG("ARP rootkit found");
-//        return;
-//    }
-//
-////    HYPER_DEBUG("extracted user data of size %zu:", result_user_data_size);
-////    HYPER_RETURN_IF(result_user_data_size == 0);
-////    hyperwall_dump_hex(hyperwall_debug_file, user_data_ptr, result_user_data_size);
-//    HYPER_DEBUG("Full packet in e1000");
-//    hyperwall_dump_hex(hyperwall_debug_file, buffer, packet_size);
-//
-//    // Compute MD5 of packet and find it in the hyperwall tree of hashes.
-//    // Note order is from high layer to low layer, as most packets are l5 only
-//    // This test is for raw packet mostly, TODO: add support for packets with padding that we want to hash without the padding including ICMP / UDP
-//    HYPER_DEBUG("Trying offsets l3hdr_off = %u l4hdr_off = %u l5hdr_off = %u", l3hdr_off, l4hdr_off, l5hdr_off);
-//    const size_t offsets[] = {l5hdr_off, l4hdr_off, l3hdr_off};
-//    for (int i = 0; i < sizeof(offsets) / sizeof(*offsets); ++i)
-//    {
-//        size_t offset = offsets[i];
-//        const char* data = buffer + offset;
-//        const size_t leftover_bytes = packet_size - offset;
-//
-//        uint8_t *result_md5_hash = hyperwall_hash(data, leftover_bytes);
-//        if(hyperwall_consume_md5_hash(result_md5_hash))
-//        {
-//            return;
-//        }
-//
-//        // TODO: find max size to tree, and drop oldest hash or something
-//        // TODO: free that hash
-//        // TODO: DROP UDP and TCP packets that are not verified
-//        // TODO: think if there is a possibly better protection, maybe when sending a packet
-//    }
-
+    // TODO: find max size to tree, and drop oldest hash or something
+    // TODO: free that hash
+    // TODO: DROP UDP and TCP packets that are not verified
+    // TODO: think if there is a possibly better protection, maybe when sending a packet
 
     HYPER_DEBUG("No hash was found!!!!");
-    // If we reached this flow, no hash was in our tree. Bad.
-    // TODO: ROOTKIT FOUND
+    return false;
 }
 
 static void
@@ -886,8 +709,15 @@ e1000_send_packet(E1000State *s, const uint8_t *buf, int size)
     if (s->phy_reg[PHY_CTRL] & MII_CR_LOOPBACK) {
         qemu_receive_packet(nc, buf, size);
     } else {
-        hyperwall_process_packet(s, buf, size);
-        qemu_send_packet(nc, buf, size);
+        if(hyperwall_process_packet(buf, size))
+        {
+            HYPER_DEBUG("Packet OK!");
+            qemu_send_packet(nc, buf, size);
+        }
+        else
+        {
+            HYPER_DEBUG("Dropped packet!");
+        }
     }
     inc_tx_bcast_or_mcast_count(s, buf);
     e1000x_increase_size_stats(s->mac_reg, PTCregs, size);

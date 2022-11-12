@@ -5181,7 +5181,7 @@ void kvm_arch_handle_arp_xmit_bp(CPUState *cpu)
      * */
     // Read EDI register, which will contains the skb_buffer
     HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, env->regs[R_EDI], &kernel_sk_buff, sizeof(kernel_sk_buff), 0) < 0);
-    HYPER_DEBUG("PARSED ARP from skb at %u", env->regs[R_EDI]);
+    HYPER_DEBUG("PARSED ARP from skb at %lu", env->regs[R_EDI]);
     // TODO: add verification for next == NULL && prev == NULL
 
 //    HYPER_DEBUG("kernel_sk_buff.next = %u", kernel_sk_buff.next);
@@ -5190,7 +5190,7 @@ void kvm_arch_handle_arp_xmit_bp(CPUState *cpu)
 //HYPER_DEBUG("kernel_sk_buff.len = %u", kernel_sk_buff.len);
     HYPER_DEBUG("kernel_sk_buff.data_len = %u", kernel_sk_buff.data_len);
 //    HYPER_DEBUG("kernel_sk_buff.mac_len = %u", kernel_sk_buff.mac_len);
-    HYPER_DEBUG("kernel_sk_buff.data = %u", kernel_sk_buff.data);
+    HYPER_DEBUG("kernel_sk_buff.data = %p", kernel_sk_buff.data);
     HYPER_DEBUG("kernel_sk_buff.tail = %u", kernel_sk_buff.tail);
 //    HYPER_DEBUG("kernel_sk_buff.end = %u", kernel_sk_buff.end);
 //    HYPER_DEBUG("kernel_sk_buff.head = %u", kernel_sk_buff.head);
@@ -5210,7 +5210,7 @@ void kvm_arch_handle_arp_xmit_bp(CPUState *cpu)
     Error *error = NULL;
 
     // Allocated result_md5_hash pointer, should be freed with g_free
-    HYPER_RETURN_IF(qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, buffer, kernel_sk_buff.tail, &result_md5_hash, &hash_len, &error) < 0);
+    HYPER_RETURN_IF(qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, (const char *) buffer, kernel_sk_buff.tail, &result_md5_hash, &hash_len, &error) < 0);
 
     HYPER_DEBUG("Inserting ARP md5 hash to tree %p\n", result_md5_hash);
     hyperwall_insert_md5_hash(result_md5_hash);
@@ -5262,16 +5262,17 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
     // Ignore packets that are not udp / tcp / raw socket
     if (kernel_socket.ops != (void *) system_map_inet_dgram_ops &&
         kernel_socket.ops != (void *) system_map_inet_stream_ops &&
-        kernel_socket.ops != (void *) system_map_inet_sockraw_ops
-            )
+        kernel_socket.ops != (void *) system_map_inet_sockraw_ops &&
+        kernel_socket.ops != (void *) system_map_packet_ops)
     {
+//        HYPER_DEBUG("NOT hyperwall packet!");
         return;
     }
+    else
+    {
+//        HYPER_DEBUG("Classic hyperwall packet.");
+    }
 
-//    if(kernel_socket.ops == (void*)system_map_inet_sockraw_ops)
-//    {
-//        HYPER_DEBUG("RAW SOCKET");
-//    }
 
     HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, env->regs[R_ESI], &msg_hdr, sizeof(msg_hdr), 0) < 0);
     HYPER_DEBUG("msg_hdr.msg_iter.count = %lu\n", msg_hdr.msg_iter.nr_segs);
@@ -5282,10 +5283,12 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
     // For each segment, read to buffer and hash it
     for (size_t i = 0; i < msg_hdr.msg_iter.nr_segs; ++i)
     {
+        // TODO: if len is too big, we might crash, maybe assert or maybe alloc space amd copy there?
+        // TODO convert this to uint8_t
         char segment_data[segments[i].iov_len];
         HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)segments[i].iov_base, segment_data, segments[i].iov_len, 0) < 0);
 
-        HYPER_DEBUG("segments[%u].iov_base = %p", i, segments[i].iov_base);
+        HYPER_DEBUG("segments[%zu].iov_base = %p", i, segments[i].iov_base);
 
         // TODO: maybe support dgram as well. or just always read proto and check for ICMP
         if(kernel_socket.ops == (void*)system_map_inet_sockraw_ops)
@@ -5303,20 +5306,39 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
             {
                 HYPER_DEBUG("ICMP!!!");
                 const size_t ICMP_HDR_SIZE = 8;
-                uint8_t *md5_hash = hyperwall_hash(segment_data + ICMP_HDR_SIZE, segments[i].iov_len - ICMP_HDR_SIZE);
-                HYPER_DEBUG("Inserting md5 hash to tree %p\n", md5_hash);
+                uint8_t *md5_hash = hyperwall_hash((const uint8_t *) (segment_data + ICMP_HDR_SIZE), segments[i].iov_len - ICMP_HDR_SIZE);
+                HYPER_DEBUG("Inserting md5 hash to tree %p", md5_hash);
                 hyperwall_insert_md5_hash(md5_hash);
                 continue;
             }
         }
 
-        uint8_t *md5_hash = hyperwall_hash(segment_data, segments[i].iov_len);
-        // Try to see which packets do I expect in e1000 later
-        HYPER_DEBUG("segment_data of size %zu\n", segments[i].iov_len);
-        hyperwall_dump_hex(hyperwall_debug_file, segment_data, segments[i].iov_len);
+        const size_t MTU = 1460; // 1500 for Ether / IP packet, but only 1460 for payload
+        const size_t chunks = segments[i].iov_len / MTU;
+        const size_t leftover_chunk = segments[i].iov_len % MTU;
 
-        HYPER_DEBUG("Inserting md5 hash to tree %p\n", md5_hash);
-        hyperwall_insert_md5_hash(md5_hash);
-        // result_md5_hash needs to be freed with g_free
+        for (size_t j = 0; j < chunks; ++j)
+        {
+            HYPER_DEBUG("MTU chunk number %zu", j);
+            const uint8_t *chunk_ptr = (const uint8_t *) segment_data + MTU * j;
+            uint8_t *md5_hash = hyperwall_hash(chunk_ptr, MTU);
+            // Try to see which packets do I expect in e1000 later
+            hyperwall_dump_hex(hyperwall_debug_file, chunk_ptr, MTU);
+
+            HYPER_DEBUG("Inserting md5 hash to tree %p", md5_hash);
+            hyperwall_insert_md5_hash(md5_hash);
+            // result_md5_hash needs to be freed with g_free
+        }
+        if (leftover_chunk != 0)
+        {
+            HYPER_DEBUG("leftover_chunk: %zu", leftover_chunk);
+            const uint8_t *chunk_ptr = (const uint8_t *) segment_data + MTU * chunks;
+            uint8_t *md5_hash = hyperwall_hash(chunk_ptr, leftover_chunk);
+            // Try to see which packets do I expect in e1000 later
+            hyperwall_dump_hex(hyperwall_debug_file, chunk_ptr, leftover_chunk);
+            HYPER_DEBUG("Inserting md5 hash to tree %p", md5_hash);
+            hyperwall_insert_md5_hash(md5_hash);
+            // result_md5_hash needs to be freed with g_free
+        }
     }
 }

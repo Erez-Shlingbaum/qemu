@@ -8,7 +8,7 @@
 #include "hyperwall/bsd_tree.h"
 
 #define HYPER_DEBUG(format, args...) do { \
-        fprintf(hyperwall_debug_file, "%s:%d:%s(): " format "\n", __FILE__, __LINE__, __func__, ##args); \
+        fprintf(hyperwall_debug_file, "%s:%u:%s(): " format "\n", __FILE__, __LINE__, __func__, ##args); \
         fflush(hyperwall_debug_file);         \
     } while (false)
 
@@ -48,6 +48,7 @@ extern long unsigned int system_map_sock_sendmsg;
 extern long unsigned int system_map_inet_dgram_ops;
 extern long unsigned int system_map_inet_stream_ops;
 extern long unsigned int system_map_inet_sockraw_ops;
+extern long unsigned int system_map_packet_ops;
 extern long unsigned int system_map_arp_xmit;
 
 extern bool hyperwall_is_hooks_on;

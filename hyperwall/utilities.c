@@ -5,8 +5,8 @@
 #include <stdbool.h>
 #include <memory.h>
 
-
 #include "qemu/osdep.h"
+#include "qapi/error.h"
 #include "hw/core/cpu.h"
 #include "sysemu/kvm.h"
 #include "exec/gdbstub.h"
@@ -26,6 +26,7 @@ long unsigned int system_map_sock_sendmsg = 0;
 long unsigned int system_map_inet_dgram_ops = 0;
 long unsigned int system_map_inet_stream_ops = 0;
 long unsigned int system_map_inet_sockraw_ops = 0;
+long unsigned int system_map_packet_ops = 0;
 long unsigned int system_map_arp_xmit = 0;
 
 static unsigned long int get_env_symbol(const char *name);
@@ -96,9 +97,9 @@ uint8_t *hyperwall_hash(const uint8_t *buffer, size_t len)
     size_t hash_len = 0;
     Error *error = NULL;
 
-    int result = qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, (const char *)buffer, len, &result_md5_hash, &hash_len, &error);
-    HYPER_DEBUG("buffer = %u len = %u", buffer, len);
-    if(result != 0)
+    int result = qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, (const char *) buffer, len, &result_md5_hash, &hash_len, &error);
+    HYPER_DEBUG("buffer = %p len = %zu", buffer, len);
+    if (result != 0)
     {
         HYPER_DEBUG("ERROR = %s", error_get_pretty(error));
     }
@@ -113,7 +114,7 @@ bool hyperwall_consume_md5_hash(uint8_t *hash)
     bool is_md5_in_tree = hyperwall_contains_md5_hash(hash);
     HYPER_DEBUG("hyperwall_contains_md5_hash = %s", is_md5_in_tree ? "true" : "false");
 
-    if(is_md5_in_tree)
+    if (is_md5_in_tree)
     {
         hyperwall_remove_md5_hash(hash);
     }
@@ -151,6 +152,16 @@ static unsigned long int get_env_symbol(const char *name)
     return result;
 }
 
+// We support only X86_64
+//typedef uint64_t target_ulong;
+//
+//extern int kvm_insert_breakpoint(
+//        CPUState *cpu,
+//        target_ulong addr,
+//        target_ulong len,
+//        int type
+//);
+
 void hyperwall_hook_init(void)
 {
     long unsigned int system_map_entry_SYSCALL64 = get_env_symbol("SYSCALL64");
@@ -161,21 +172,17 @@ void hyperwall_hook_init(void)
     system_map_sock_sendmsg = get_env_symbol("SOCK_SENDMSG") + hyperwall_kaslr_diff;
     fprintf(hyperwall_debug_file, "system_map_sock_sendmsg = %lu\n", system_map_sock_sendmsg);
 
-    // 0xffffffff82346c40 D inet_dgram_ops
-    // 0xffffffff82346d20 D inet_stream_ops
-    // ffffffff82346b30 d inet_family_ops
-    // ffffffff82346b60 d inet_sockraw_ops
-
     system_map_inet_dgram_ops = get_env_symbol("INET_DGRAM_OPS") + hyperwall_kaslr_diff;
     fprintf(hyperwall_debug_file, "system_map_inet_dgram_ops = %lu\n", system_map_inet_dgram_ops);
 
     system_map_inet_stream_ops = get_env_symbol("INET_STREAM_OPS") + hyperwall_kaslr_diff;
     fprintf(hyperwall_debug_file, "system_map_inet_stream_ops = %lu\n", system_map_inet_stream_ops);
 
-    //// Not relevant since my solution tries all layers hashes instead of trying to smartly figure out which layer came
-    // Yes relevant because I need to hash raw socket packets as well!!!
     system_map_inet_sockraw_ops = get_env_symbol("INET_SOCKRAW_OPS") + hyperwall_kaslr_diff;
     fprintf(hyperwall_debug_file, "system_map_inet_sockraw_ops = %lu\n", system_map_inet_sockraw_ops);
+
+    system_map_packet_ops = get_env_symbol("PACKET_OPS") + hyperwall_kaslr_diff;
+    fprintf(hyperwall_debug_file, "system_map_packet_ops = %lu\n", system_map_inet_sockraw_ops);
 
     system_map_arp_xmit = get_env_symbol("ARP_XMIT") + hyperwall_kaslr_diff;
     fprintf(hyperwall_debug_file, "system_map_arp_xmit = %lu\n", system_map_arp_xmit);
