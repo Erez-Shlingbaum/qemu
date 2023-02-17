@@ -243,6 +243,7 @@ class QAPISchemaType(QAPISchemaEntity):
             'number':  'QTYPE_QNUM',
             'int':     'QTYPE_QNUM',
             'boolean': 'QTYPE_QBOOL',
+            'array':   'QTYPE_QLIST',
             'object':  'QTYPE_QDICT'
         }
         return json2qtype.get(self.json_type())
@@ -251,6 +252,11 @@ class QAPISchemaType(QAPISchemaEntity):
         if self.is_implicit():
             return None
         return self.name
+
+    def need_has_if_optional(self):
+        # When FOO is a pointer, has_FOO == !!FOO, i.e. has_FOO is redundant.
+        # Except for arrays; see QAPISchemaArrayType.need_has_if_optional().
+        return not self.c_type().endswith(POINTER_SUFFIX)
 
     def check(self, schema):
         QAPISchemaEntity.check(self, schema)
@@ -350,6 +356,11 @@ class QAPISchemaArrayType(QAPISchemaType):
         assert isinstance(element_type, str)
         self._element_type_name = element_type
         self.element_type = None
+
+    def need_has_if_optional(self):
+        # When FOO is an array, we still need has_FOO to distinguish
+        # absent (!has_FOO) from present and empty (has_FOO && !FOO).
+        return True
 
     def check(self, schema):
         super().check(schema)
@@ -744,6 +755,10 @@ class QAPISchemaObjectTypeMember(QAPISchemaMember):
         self.optional = optional
         self.features = features or []
 
+    def need_has(self):
+        assert self.type
+        return self.optional and self.type.need_has_if_optional()
+
     def check(self, schema):
         assert self.defined_in
         self.type = schema.resolve_type(self._type_name, self.info,
@@ -1069,6 +1084,9 @@ class QAPISchema:
             None))
 
     def _make_variant(self, case, typ, ifcond, info):
+        if isinstance(typ, list):
+            assert len(typ) == 1
+            typ = self._make_array_type(typ[0], info)
         return QAPISchemaVariant(case, info, typ, ifcond)
 
     def _def_union_type(self, expr, info, doc):

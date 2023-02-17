@@ -24,11 +24,13 @@
 
 #include "qemu/osdep.h"
 #include "qemu/timer.h"
+#include "block/block-io.h"
 #include "block/block_int.h"
 #include "block/aio.h"
 #include "block/raw-aio.h"
 #include "qemu/event_notifier.h"
 #include "qemu/iov.h"
+#include "qemu/memalign.h"
 #include <windows.h>
 #include <winioctl.h>
 

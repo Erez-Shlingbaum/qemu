@@ -16,8 +16,9 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
-#ifndef _TARGET_ARCH_THREAD_H_
-#define _TARGET_ARCH_THREAD_H_
+
+#ifndef TARGET_ARCH_THREAD_H
+#define TARGET_ARCH_THREAD_H
 
 /* Compare to arm/arm/vm_machdep.c cpu_set_upcall_kse() */
 static inline void target_thread_set_upcall(CPUARMState *env, abi_ulong entry,
@@ -62,9 +63,7 @@ static inline void target_thread_init(struct target_pt_regs *regs,
     }
     regs->ARM_pc = infop->entry & 0xfffffffe;
     regs->ARM_sp = stack;
-    if (bsd_type == target_freebsd) {
-        regs->ARM_lr = infop->entry & 0xfffffffe;
-    }
+    regs->ARM_lr = infop->entry & 0xfffffffe;
     /*
      * FreeBSD kernel passes the ps_strings pointer in r0. This is used by some
      * programs to set status messages that we see in ps. bsd-user doesn't
@@ -79,4 +78,4 @@ static inline void target_thread_init(struct target_pt_regs *regs,
      */
 }
 
-#endif /* !_TARGET_ARCH_THREAD_H_ */
+#endif /* TARGET_ARCH_THREAD_H */

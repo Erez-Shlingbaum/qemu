@@ -385,19 +385,19 @@
     POWERPC_DEF_SVR("mpc8548e_v21", "MPC8548E v2.1",
                     CPU_POWERPC_MPC8548E_v21, POWERPC_SVR_8548E_v21, e500v2)
     POWERPC_DEF_SVR("mpc8555_v10", "MPC8555 v1.0",
-                    CPU_POWERPC_MPC8555_v10,  POWERPC_SVR_8555_v10,  e500v2)
+                    CPU_POWERPC_MPC8555_v10,  POWERPC_SVR_8555_v10,  e500v1)
     POWERPC_DEF_SVR("mpc8555_v11", "MPC8555 v1.1",
-                    CPU_POWERPC_MPC8555_v11,  POWERPC_SVR_8555_v11,  e500v2)
+                    CPU_POWERPC_MPC8555_v11,  POWERPC_SVR_8555_v11,  e500v1)
     POWERPC_DEF_SVR("mpc8555e_v10", "MPC8555E v1.0",
-                    CPU_POWERPC_MPC8555E_v10, POWERPC_SVR_8555E_v10, e500v2)
+                    CPU_POWERPC_MPC8555E_v10, POWERPC_SVR_8555E_v10, e500v1)
     POWERPC_DEF_SVR("mpc8555e_v11", "MPC8555E v1.1",
-                    CPU_POWERPC_MPC8555E_v11, POWERPC_SVR_8555E_v11, e500v2)
+                    CPU_POWERPC_MPC8555E_v11, POWERPC_SVR_8555E_v11, e500v1)
     POWERPC_DEF_SVR("mpc8560_v10", "MPC8560 v1.0",
-                    CPU_POWERPC_MPC8560_v10,  POWERPC_SVR_8560_v10,  e500v2)
+                    CPU_POWERPC_MPC8560_v10,  POWERPC_SVR_8560_v10,  e500v1)
     POWERPC_DEF_SVR("mpc8560_v20", "MPC8560 v2.0",
-                    CPU_POWERPC_MPC8560_v20,  POWERPC_SVR_8560_v20,  e500v2)
+                    CPU_POWERPC_MPC8560_v20,  POWERPC_SVR_8560_v20,  e500v1)
     POWERPC_DEF_SVR("mpc8560_v21", "MPC8560 v2.1",
-                    CPU_POWERPC_MPC8560_v21,  POWERPC_SVR_8560_v21,  e500v2)
+                    CPU_POWERPC_MPC8560_v21,  POWERPC_SVR_8560_v21,  e500v1)
     POWERPC_DEF_SVR("mpc8567", "MPC8567",
                     CPU_POWERPC_MPC8567,      POWERPC_SVR_8567,      e500v2)
     POWERPC_DEF_SVR("mpc8567e", "MPC8567E",
@@ -422,14 +422,6 @@
                     CPU_POWERPC_MPC8641D,     POWERPC_SVR_8641D,     e600)
     /* 32 bits "classic" PowerPC                                             */
     /* PowerPC 6xx family                                                    */
-    POWERPC_DEF("601_v0",        CPU_POWERPC_601_v0,                 601,
-                "PowerPC 601v0")
-    POWERPC_DEF("601_v1",        CPU_POWERPC_601_v1,                 601,
-                "PowerPC 601v1")
-    POWERPC_DEF("601_v2",        CPU_POWERPC_601_v2,                 601v,
-                "PowerPC 601v2")
-    POWERPC_DEF("602",           CPU_POWERPC_602,                    602,
-                "PowerPC 602")
     POWERPC_DEF("603",           CPU_POWERPC_603,                    603,
                 "PowerPC 603")
     POWERPC_DEF("603e_v1.1",     CPU_POWERPC_603E_v11,               603E,
@@ -861,8 +853,6 @@ PowerPCCPUAlias ppc_cpu_aliases[] = {
     { "mpc8555", "mpc8555_v11" },
     { "mpc8555e", "mpc8555e_v11" },
     { "mpc8560", "mpc8560_v21" },
-    { "601",  "601_v2" },
-    { "601v", "601_v2" },
     { "vanilla", "603" },
     { "603e", "603e_v4.1" },
     { "stretch", "603e_v4.1" },
@@ -889,7 +879,6 @@ PowerPCCPUAlias ppc_cpu_aliases[] = {
     { "755", "755_v2.8" },
     { "goldfinger", "755_v2.8" },
     { "7400", "7400_v2.9" },
-    { "max", "7400_v2.9" },
     { "g4",  "7400_v2.9" },
     { "7410", "7410_v1.4" },
     { "nitro", "7410_v1.4" },
@@ -928,6 +917,6 @@ PowerPCCPUAlias ppc_cpu_aliases[] = {
 #endif
     { "ppc32", "604" },
     { "ppc", "604" },
-    { "default", "604" },
+
     { NULL, NULL }
 };

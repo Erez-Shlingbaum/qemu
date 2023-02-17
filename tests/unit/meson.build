@@ -47,12 +47,17 @@ tests = {
   'ptimer-test': ['ptimer-test-stubs.c', meson.project_source_root() / 'hw/core/ptimer.c'],
   'test-qapi-util': [],
   'test-smp-parse': [qom, meson.project_source_root() / 'hw/core/machine-smp.c'],
+  'test-interval-tree': [],
 }
 
 if have_system or have_tools
   tests += {
     'test-qmp-event': [testqapi],
   }
+
+  if seccomp.found()
+    tests += {'test-seccomp': ['../../softmmu/qemu-seccomp.c', seccomp]}
+  endif
 endif
 
 if have_block
@@ -73,7 +78,9 @@ if have_block
     'test-crypto-hash': [crypto],
     'test-crypto-hmac': [crypto],
     'test-crypto-cipher': [crypto],
+    'test-crypto-akcipher': [crypto],
     'test-crypto-secret': [crypto, keyutils],
+    'test-crypto-der': [crypto],
     'test-authz-simple': [authz],
     'test-authz-list': [authz],
     'test-authz-listfile': [authz],
@@ -82,6 +89,7 @@ if have_block
     'test-io-channel-file': ['io-channel-helpers.c', io],
     'test-io-channel-command': ['io-channel-helpers.c', io],
     'test-io-channel-buffer': ['io-channel-helpers.c', io],
+    'test-io-channel-null': [io],
     'test-crypto-ivgen': [io],
     'test-crypto-afsplit': [io],
     'test-crypto-block': [io],
@@ -106,7 +114,7 @@ if have_block
   if 'CONFIG_POSIX' in config_host
     tests += {'test-image-locking': [testblock]}
   endif
-  if 'CONFIG_REPLICATION' in config_host
+  if config_host_data.get('CONFIG_REPLICATION')
     tests += {'test-replication': [testblock]}
   endif
   if nettle.found() or gcrypt.found()
@@ -144,15 +152,13 @@ if have_system
     endif
 
     tests += {
-      'test-qdev-global-props': [qom, hwcore, testqapi]
+      'test-qdev-global-props': [qom, hwcore]
     }
   endif
 endif
 
-if 'CONFIG_TSAN' not in config_host and \
-   'CONFIG_GUEST_AGENT' in config_host and \
-   'CONFIG_LINUX' in config_host
-  tests += {'test-qga': ['../qtest/libqtest.c']}
+if have_ga and targetos == 'linux'
+  tests += {'test-qga': ['../qtest/libqmp.c']}
   test_deps += {'test-qga': qga}
 endif
 

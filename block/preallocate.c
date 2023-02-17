@@ -30,6 +30,7 @@
 #include "qemu/module.h"
 #include "qemu/option.h"
 #include "qemu/units.h"
+#include "block/block-io.h"
 #include "block/block_int.h"
 
 
@@ -134,6 +135,7 @@ static int preallocate_open(BlockDriverState *bs, QDict *options, int flags,
                             Error **errp)
 {
     BDRVPreallocateState *s = bs->opaque;
+    int ret;
 
     /*
      * s->data_end and friends should be initialized on permission update.
@@ -141,11 +143,9 @@ static int preallocate_open(BlockDriverState *bs, QDict *options, int flags,
      */
     s->file_end = s->zero_start = s->data_end = -EINVAL;
 
-    bs->file = bdrv_open_child(NULL, options, "file", bs, &child_of_bds,
-                               BDRV_CHILD_FILTERED | BDRV_CHILD_PRIMARY,
-                               false, errp);
-    if (!bs->file) {
-        return -EINVAL;
+    ret = bdrv_open_file_child(NULL, options, "file", bs, errp);
+    if (ret < 0) {
+        return ret;
     }
 
     if (!preallocate_absorb_opts(&s->opts, options, bs->file->bs, errp)) {
@@ -276,6 +276,10 @@ static bool coroutine_fn handle_write(BlockDriverState *bs, int64_t offset,
     int64_t end = offset + bytes;
     int64_t prealloc_start, prealloc_end;
     int ret;
+    uint32_t file_align = bs->file->bs->bl.request_alignment;
+    uint32_t prealloc_align = MAX(s->opts.prealloc_align, file_align);
+
+    assert(QEMU_IS_ALIGNED(prealloc_align, file_align));
 
     if (!has_prealloc_perms(bs)) {
         /* We don't have state neither should try to recover it */
@@ -283,7 +287,7 @@ static bool coroutine_fn handle_write(BlockDriverState *bs, int64_t offset,
     }
 
     if (s->data_end < 0) {
-        s->data_end = bdrv_getlength(bs->file->bs);
+        s->data_end = bdrv_co_getlength(bs->file->bs);
         if (s->data_end < 0) {
             return false;
         }
@@ -305,7 +309,7 @@ static bool coroutine_fn handle_write(BlockDriverState *bs, int64_t offset,
     }
 
     if (s->file_end < 0) {
-        s->file_end = bdrv_getlength(bs->file->bs);
+        s->file_end = bdrv_co_getlength(bs->file->bs);
         if (s->file_end < 0) {
             return false;
         }
@@ -320,9 +324,14 @@ static bool coroutine_fn handle_write(BlockDriverState *bs, int64_t offset,
 
     /* Now we want new preallocation, as request writes beyond s->file_end. */
 
-    prealloc_start = want_merge_zero ? MIN(offset, s->file_end) : s->file_end;
-    prealloc_end = QEMU_ALIGN_UP(end + s->opts.prealloc_size,
-                                 s->opts.prealloc_align);
+    prealloc_start = QEMU_ALIGN_UP(
+            want_merge_zero ? MIN(offset, s->file_end) : s->file_end,
+            file_align);
+    prealloc_end = QEMU_ALIGN_UP(
+            MAX(prealloc_start, end) + s->opts.prealloc_size,
+            prealloc_align);
+
+    want_merge_zero = want_merge_zero && (prealloc_start <= offset);
 
     ret = bdrv_co_pwrite_zeroes(
             bs->file, prealloc_start, prealloc_end - prealloc_start,
@@ -372,7 +381,7 @@ preallocate_co_truncate(BlockDriverState *bs, int64_t offset,
 
     if (s->data_end >= 0 && offset > s->data_end) {
         if (s->file_end < 0) {
-            s->file_end = bdrv_getlength(bs->file->bs);
+            s->file_end = bdrv_co_getlength(bs->file->bs);
             if (s->file_end < 0) {
                 error_setg(errp, "failed to get file length");
                 return s->file_end;
@@ -433,7 +442,7 @@ static int coroutine_fn preallocate_co_flush(BlockDriverState *bs)
     return bdrv_co_flush(bs->file->bs);
 }
 
-static int64_t preallocate_getlength(BlockDriverState *bs)
+static int64_t coroutine_fn preallocate_co_getlength(BlockDriverState *bs)
 {
     int64_t ret;
     BDRVPreallocateState *s = bs->opaque;
@@ -442,7 +451,7 @@ static int64_t preallocate_getlength(BlockDriverState *bs)
         return s->data_end;
     }
 
-    ret = bdrv_getlength(bs->file->bs);
+    ret = bdrv_co_getlength(bs->file->bs);
 
     if (has_prealloc_perms(bs)) {
         s->file_end = s->zero_start = s->data_end = ret;
@@ -528,9 +537,9 @@ BlockDriver bdrv_preallocate_filter = {
     .format_name = "preallocate",
     .instance_size = sizeof(BDRVPreallocateState),
 
-    .bdrv_getlength = preallocate_getlength,
-    .bdrv_open = preallocate_open,
-    .bdrv_close = preallocate_close,
+    .bdrv_co_getlength    = preallocate_co_getlength,
+    .bdrv_open            = preallocate_open,
+    .bdrv_close           = preallocate_close,
 
     .bdrv_reopen_prepare  = preallocate_reopen_prepare,
     .bdrv_reopen_commit   = preallocate_reopen_commit,

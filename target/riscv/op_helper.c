@@ -24,8 +24,8 @@
 #include "exec/helper-proto.h"
 
 /* Exceptions processing helpers */
-void QEMU_NORETURN riscv_raise_exception(CPURISCVState *env,
-                                          uint32_t exception, uintptr_t pc)
+G_NORETURN void riscv_raise_exception(CPURISCVState *env,
+                                      uint32_t exception, uintptr_t pc)
 {
     CPUState *cs = env_cpu(env);
     cs->exception_index = exception;
@@ -39,6 +39,15 @@ void helper_raise_exception(CPURISCVState *env, uint32_t exception)
 
 target_ulong helper_csrr(CPURISCVState *env, int csr)
 {
+    /*
+     * The seed CSR must be accessed with a read-write instruction. A
+     * read-only instruction such as CSRRS/CSRRC with rs1=x0 or CSRRSI/
+     * CSRRCI with uimm=0 will raise an illegal instruction exception.
+     */
+    if (csr == CSR_SEED) {
+        riscv_raise_exception(env, RISCV_EXCP_ILLEGAL_INST, GETPC());
+    }
+
     target_ulong val = 0;
     RISCVException ret = riscv_csrrw(env, csr, &val, 0, 0);
 
@@ -140,21 +149,24 @@ target_ulong helper_sret(CPURISCVState *env)
     }
 
     mstatus = env->mstatus;
+    prev_priv = get_field(mstatus, MSTATUS_SPP);
+    mstatus = set_field(mstatus, MSTATUS_SIE,
+                        get_field(mstatus, MSTATUS_SPIE));
+    mstatus = set_field(mstatus, MSTATUS_SPIE, 1);
+    mstatus = set_field(mstatus, MSTATUS_SPP, PRV_U);
+    if (env->priv_ver >= PRIV_VERSION_1_12_0) {
+        mstatus = set_field(mstatus, MSTATUS_MPRV, 0);
+    }
+    env->mstatus = mstatus;
 
     if (riscv_has_ext(env, RVH) && !riscv_cpu_virt_enabled(env)) {
         /* We support Hypervisor extensions and virtulisation is disabled */
         target_ulong hstatus = env->hstatus;
 
-        prev_priv = get_field(mstatus, MSTATUS_SPP);
         prev_virt = get_field(hstatus, HSTATUS_SPV);
 
         hstatus = set_field(hstatus, HSTATUS_SPV, 0);
-        mstatus = set_field(mstatus, MSTATUS_SPP, 0);
-        mstatus = set_field(mstatus, SSTATUS_SIE,
-                            get_field(mstatus, SSTATUS_SPIE));
-        mstatus = set_field(mstatus, SSTATUS_SPIE, 1);
 
-        env->mstatus = mstatus;
         env->hstatus = hstatus;
 
         if (prev_virt) {
@@ -162,14 +174,6 @@ target_ulong helper_sret(CPURISCVState *env)
         }
 
         riscv_cpu_set_virt_enabled(env, prev_virt);
-    } else {
-        prev_priv = get_field(mstatus, MSTATUS_SPP);
-
-        mstatus = set_field(mstatus, MSTATUS_SIE,
-                            get_field(mstatus, MSTATUS_SPIE));
-        mstatus = set_field(mstatus, MSTATUS_SPIE, 1);
-        mstatus = set_field(mstatus, MSTATUS_SPP, PRV_U);
-        env->mstatus = mstatus;
     }
 
     riscv_cpu_set_mode(env, prev_priv);
@@ -193,7 +197,7 @@ target_ulong helper_mret(CPURISCVState *env)
 
     if (riscv_feature(env, RISCV_FEATURE_PMP) &&
         !pmp_get_num_rules(env) && (prev_priv != PRV_M)) {
-        riscv_raise_exception(env, RISCV_EXCP_ILLEGAL_INST, GETPC());
+        riscv_raise_exception(env, RISCV_EXCP_INST_ACCESS_FAULT, GETPC());
     }
 
     target_ulong prev_virt = get_field(env->mstatus, MSTATUS_MPV);
@@ -202,6 +206,9 @@ target_ulong helper_mret(CPURISCVState *env)
     mstatus = set_field(mstatus, MSTATUS_MPIE, 1);
     mstatus = set_field(mstatus, MSTATUS_MPP, PRV_U);
     mstatus = set_field(mstatus, MSTATUS_MPV, 0);
+    if ((env->priv_ver >= PRIV_VERSION_1_12_0) && (prev_priv != PRV_M)) {
+        mstatus = set_field(mstatus, MSTATUS_MPRV, 0);
+    }
     env->mstatus = mstatus;
     riscv_cpu_set_mode(env, prev_priv);
 
@@ -249,6 +256,12 @@ void helper_tlb_flush(CPURISCVState *env)
     } else {
         tlb_flush(cs);
     }
+}
+
+void helper_tlb_flush_all(CPURISCVState *env)
+{
+    CPUState *cs = env_cpu(env);
+    tlb_flush_all_cpus_synced(cs);
 }
 
 void helper_hyp_tlb_flush(CPURISCVState *env)

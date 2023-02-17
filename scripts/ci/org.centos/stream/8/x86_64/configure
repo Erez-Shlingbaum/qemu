@@ -16,6 +16,7 @@
 # that patches adding downstream specific devices are not available.
 #
 ../configure \
+--python=/usr/bin/python3.8 \
 --prefix="/usr" \
 --libdir="/usr/lib64" \
 --datadir="/usr/share" \
@@ -81,7 +82,6 @@
 --disable-libssh \
 --disable-libudev \
 --disable-libusb \
---disable-libxml2 \
 --disable-linux-aio \
 --disable-linux-io-uring \
 --disable-linux-user \
@@ -133,17 +133,15 @@
 --disable-vhost-crypto \
 --disable-vhost-kernel \
 --disable-vhost-net \
---disable-vhost-scsi \
 --disable-vhost-user \
 --disable-vhost-user-blk-server \
 --disable-vhost-vdpa \
---disable-vhost-vsock \
 --disable-virglrenderer \
 --disable-virtfs \
 --disable-virtiofsd \
 --disable-vnc \
 --disable-vnc-jpeg \
---disable-vnc-png \
+--disable-png \
 --disable-vnc-sasl \
 --disable-vte \
 --disable-vvfat \
@@ -191,7 +189,7 @@
 --enable-tcg \
 --enable-tools \
 --enable-tpm \
---enable-trace-backend=dtrace \
+--enable-trace-backends=dtrace \
 --enable-usb-redir \
 --enable-virtiofsd \
 --enable-vhost-kernel \
@@ -199,9 +197,8 @@
 --enable-vhost-user \
 --enable-vhost-user-blk-server \
 --enable-vhost-vdpa \
---enable-vhost-vsock \
 --enable-vnc \
---enable-vnc-png \
+--enable-png \
 --enable-vnc-sasl \
 --enable-werror \
 --enable-xkbcommon

@@ -8,6 +8,7 @@
  * later.  See the COPYING file in the top-level directory.
  */
 #include "qemu/osdep.h"
+#include "qemu/error-report.h"
 #include "qemu/main-loop.h"
 #include "qemu/vhost-user-server.h"
 #include "block/aio-wait.h"
@@ -65,13 +66,27 @@ static void vmsg_unblock_fds(VhostUserMsg *vmsg)
 {
     int i;
     for (i = 0; i < vmsg->fd_num; i++) {
-        qemu_set_nonblock(vmsg->fds[i]);
+        qemu_socket_set_nonblock(vmsg->fds[i]);
     }
 }
 
 static void panic_cb(VuDev *vu_dev, const char *buf)
 {
     error_report("vu_panic: %s", buf);
+}
+
+void vhost_user_server_ref(VuServer *server)
+{
+    assert(!server->wait_idle);
+    server->refcount++;
+}
+
+void vhost_user_server_unref(VuServer *server)
+{
+    server->refcount--;
+    if (server->wait_idle && !server->refcount) {
+        aio_co_wake(server->co_trip);
+    }
 }
 
 static bool coroutine_fn
@@ -102,7 +117,7 @@ vu_message_read(VuDev *vu_dev, int conn_fd, VhostUserMsg *vmsg)
          * qio_channel_readv_full may have short reads, keeping calling it
          * until getting VHOST_USER_HDR_SIZE or 0 bytes in total
          */
-        rc = qio_channel_readv_full(ioc, &iov, 1, &fds, &nfds, &local_err);
+        rc = qio_channel_readv_full(ioc, &iov, 1, &fds, &nfds, 0, &local_err);
         if (rc < 0) {
             if (rc == QIO_CHANNEL_ERR_BLOCK) {
                 assert(local_err == NULL);
@@ -177,6 +192,14 @@ static coroutine_fn void vu_client_trip(void *opaque)
         /* Keep running */
     }
 
+    if (server->refcount) {
+        /* Wait for requests to complete before we can unmap the memory */
+        server->wait_idle = true;
+        qemu_coroutine_yield();
+        server->wait_idle = false;
+    }
+    assert(server->refcount == 0);
+
     vu_deinit(vu_dev);
 
     /* vu_deinit() should have called remove_watch() */
@@ -248,7 +271,7 @@ set_watch(VuDev *vu_dev, int fd, int vu_evt,
 
         vu_fd_watch->fd = fd;
         vu_fd_watch->cb = cb;
-        qemu_set_nonblock(fd);
+        qemu_socket_set_nonblock(fd);
         aio_set_fd_handler(server->ioc->ctx, fd, true, kick_handler,
                            NULL, NULL, NULL, vu_fd_watch);
         vu_fd_watch->vu_dev = vu_dev;

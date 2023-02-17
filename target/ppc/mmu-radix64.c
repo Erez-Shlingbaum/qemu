@@ -37,7 +37,7 @@ static bool ppc_radix64_get_fully_qualified_addr(const CPUPPCState *env,
         return false;
     }
 
-    if (msr_hv) { /* MSR[HV] -> Hypervisor/bare metal */
+    if (FIELD_EX64(env->msr, MSR, HV)) { /* MSR[HV] -> Hypervisor/bare metal */
         switch (eaddr & R_EADDR_QUADRANT) {
         case R_EADDR_QUADRANT0:
             *lpid = 0;
@@ -191,12 +191,13 @@ static bool ppc_radix64_check_prot(PowerPCCPU *cpu, MMUAccessType access_type,
     }
 
     /* Determine permissions allowed by Encoded Access Authority */
-    if (!partition_scoped && (pte & R_PTE_EAA_PRIV) && msr_pr) {
+    if (!partition_scoped && (pte & R_PTE_EAA_PRIV) &&
+        FIELD_EX64(env->msr, MSR, PR)) {
         *prot = 0;
     } else if (mmuidx_pr(mmu_idx) || (pte & R_PTE_EAA_PRIV) ||
                partition_scoped) {
         *prot = ppc_radix64_get_prot_eaa(pte);
-    } else { /* !msr_pr && !(pte & R_PTE_EAA_PRIV) && !partition_scoped */
+    } else { /* !MSR_PR && !(pte & R_PTE_EAA_PRIV) && !partition_scoped */
         *prot = ppc_radix64_get_prot_eaa(pte);
         *prot &= ppc_radix64_get_prot_amr(cpu); /* Least combined permissions */
     }
@@ -204,7 +205,8 @@ static bool ppc_radix64_check_prot(PowerPCCPU *cpu, MMUAccessType access_type,
     /* Check if requested access type is allowed */
     need_prot = prot_for_access_type(access_type);
     if (need_prot & ~*prot) { /* Page Protected for that Access */
-        *fault_cause |= DSISR_PROTFAULT;
+        *fault_cause |= access_type == MMU_INST_FETCH ? SRR1_NOEXEC_GUARD :
+                                                        DSISR_PROTFAULT;
         return true;
     }
 
@@ -234,16 +236,47 @@ static void ppc_radix64_set_rc(PowerPCCPU *cpu, MMUAccessType access_type,
     }
 }
 
+static bool ppc_radix64_is_valid_level(int level, int psize, uint64_t nls)
+{
+    bool ret;
+
+    /*
+     * Check if this is a valid level, according to POWER9 and POWER10
+     * Processor User's Manuals, sections 4.10.4.1 and 5.10.6.1, respectively:
+     * Supported Radix Tree Configurations and Resulting Page Sizes.
+     *
+     * Note: these checks are specific to POWER9 and POWER10 CPUs. Any future
+     * CPUs that supports a different Radix MMU configuration will need their
+     * own implementation.
+     */
+    switch (level) {
+    case 0:     /* Root Page Dir */
+        ret = psize == 52 && nls == 13;
+        break;
+    case 1:
+    case 2:
+        ret = nls == 9;
+        break;
+    case 3:
+        ret = nls == 9 || nls == 5;
+        break;
+    default:
+        ret = false;
+    }
+
+    if (unlikely(!ret)) {
+        qemu_log_mask(LOG_GUEST_ERROR, "invalid radix configuration: "
+                      "level %d size %d nls %"PRIu64"\n",
+                      level, psize, nls);
+    }
+    return ret;
+}
+
 static int ppc_radix64_next_level(AddressSpace *as, vaddr eaddr,
                                   uint64_t *pte_addr, uint64_t *nls,
                                   int *psize, uint64_t *pte, int *fault_cause)
 {
-    uint64_t index, pde;
-
-    if (*nls < 5) { /* Directory maps less than 2**5 entries */
-        *fault_cause |= DSISR_R_BADCONFIG;
-        return 1;
-    }
+    uint64_t index, mask, nlb, pde;
 
     /* Read page <directory/table> entry from guest address space */
     pde = ldq_phys(as, *pte_addr);
@@ -258,7 +291,17 @@ static int ppc_radix64_next_level(AddressSpace *as, vaddr eaddr,
         *nls = pde & R_PDE_NLS;
         index = eaddr >> (*psize - *nls);       /* Shift */
         index &= ((1UL << *nls) - 1);           /* Mask */
-        *pte_addr = (pde & R_PDE_NLB) + (index * sizeof(pde));
+        nlb = pde & R_PDE_NLB;
+        mask = MAKE_64BIT_MASK(0, *nls + 3);
+
+        if (nlb & mask) {
+            qemu_log_mask(LOG_GUEST_ERROR,
+                "%s: misaligned page dir/table base: 0x"TARGET_FMT_lx
+                " page dir size: 0x"TARGET_FMT_lx"\n",
+                __func__, nlb, mask + 1);
+            nlb &= ~mask;
+        }
+        *pte_addr = nlb + index * sizeof(pde);
     }
     return 0;
 }
@@ -268,18 +311,29 @@ static int ppc_radix64_walk_tree(AddressSpace *as, vaddr eaddr,
                                  hwaddr *raddr, int *psize, uint64_t *pte,
                                  int *fault_cause, hwaddr *pte_addr)
 {
-    uint64_t index, pde, rpn , mask;
-
-    if (nls < 5) { /* Directory maps less than 2**5 entries */
-        *fault_cause |= DSISR_R_BADCONFIG;
-        return 1;
-    }
+    uint64_t index, pde, rpn, mask;
+    int level = 0;
 
     index = eaddr >> (*psize - nls);    /* Shift */
-    index &= ((1UL << nls) - 1);       /* Mask */
-    *pte_addr = base_addr + (index * sizeof(pde));
+    index &= ((1UL << nls) - 1);        /* Mask */
+    mask = MAKE_64BIT_MASK(0, nls + 3);
+
+    if (base_addr & mask) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "%s: misaligned page dir base: 0x"TARGET_FMT_lx
+            " page dir size: 0x"TARGET_FMT_lx"\n",
+            __func__, base_addr, mask + 1);
+        base_addr &= ~mask;
+    }
+    *pte_addr = base_addr + index * sizeof(pde);
+
     do {
         int ret;
+
+        if (!ppc_radix64_is_valid_level(level++, *psize, nls)) {
+            *fault_cause |= DSISR_R_BADCONFIG;
+            return 1;
+        }
 
         ret = ppc_radix64_next_level(as, eaddr, pte_addr, &nls, psize, &pde,
                                      fault_cause);
@@ -304,7 +358,7 @@ static bool validate_pate(PowerPCCPU *cpu, uint64_t lpid, ppc_v3_pate_t *pate)
     if (!(pate->dw0 & PATE0_HR)) {
         return false;
     }
-    if (lpid == 0 && !msr_hv) {
+    if (lpid == 0 && !FIELD_EX64(env->msr, MSR, HV)) {
         return false;
     }
     if ((pate->dw0 & PATE1_R_PRTS) < 5) {
@@ -327,13 +381,9 @@ static int ppc_radix64_partition_scoped_xlate(PowerPCCPU *cpu,
     uint64_t pte;
 
     qemu_log_mask(CPU_LOG_MMU, "%s for %s @0x%"VADDR_PRIx
-                  " mmu_idx %u (prot %c%c%c) 0x%"HWADDR_PRIx"\n",
+                  " mmu_idx %u 0x%"HWADDR_PRIx"\n",
                   __func__, access_str(access_type),
-                  eaddr, mmu_idx,
-                  *h_prot & PAGE_READ ? 'r' : '-',
-                  *h_prot & PAGE_WRITE ? 'w' : '-',
-                  *h_prot & PAGE_EXEC ? 'x' : '-',
-                  g_raddr);
+                  eaddr, mmu_idx, g_raddr);
 
     *h_page_size = PRTBE_R_GET_RTS(pate.dw0);
     /* No valid pte or access denied due to protection */
@@ -358,6 +408,24 @@ static int ppc_radix64_partition_scoped_xlate(PowerPCCPU *cpu,
     return 0;
 }
 
+/*
+ * The spapr vhc has a flat partition scope provided by qemu memory when
+ * not nested.
+ *
+ * When running a nested guest, the addressing is 2-level radix on top of the
+ * vhc memory, so it works practically identically to the bare metal 2-level
+ * radix. So that code is selected directly. A cleaner and more flexible nested
+ * hypervisor implementation would allow the vhc to provide a ->nested_xlate()
+ * function but that is not required for the moment.
+ */
+static bool vhyp_flat_addressing(PowerPCCPU *cpu)
+{
+    if (cpu->vhyp) {
+        return !vhyp_cpu_in_nested(cpu);
+    }
+    return false;
+}
+
 static int ppc_radix64_process_scoped_xlate(PowerPCCPU *cpu,
                                             MMUAccessType access_type,
                                             vaddr eaddr, uint64_t pid,
@@ -367,7 +435,7 @@ static int ppc_radix64_process_scoped_xlate(PowerPCCPU *cpu,
 {
     CPUState *cs = CPU(cpu);
     CPUPPCState *env = &cpu->env;
-    uint64_t offset, size, prtbe_addr, prtbe0, base_addr, nls, index, pte;
+    uint64_t offset, size, prtb, prtbe_addr, prtbe0, base_addr, nls, index, pte;
     int fault_cause = 0, h_page_size, h_prot;
     hwaddr h_raddr, pte_addr;
     int ret;
@@ -377,9 +445,18 @@ static int ppc_radix64_process_scoped_xlate(PowerPCCPU *cpu,
                   __func__, access_str(access_type),
                   eaddr, mmu_idx, pid);
 
+    prtb = (pate.dw1 & PATE1_R_PRTB);
+    size = 1ULL << ((pate.dw1 & PATE1_R_PRTS) + 12);
+    if (prtb & (size - 1)) {
+        /* Process Table not properly aligned */
+        if (guest_visible) {
+            ppc_radix64_raise_si(cpu, access_type, eaddr, DSISR_R_BADCONFIG);
+        }
+        return 1;
+    }
+
     /* Index Process Table by PID to Find Corresponding Process Table Entry */
     offset = pid * sizeof(struct prtb_entry);
-    size = 1ULL << ((pate.dw1 & PATE1_R_PRTS) + 12);
     if (offset >= size) {
         /* offset exceeds size of the process table */
         if (guest_visible) {
@@ -387,9 +464,9 @@ static int ppc_radix64_process_scoped_xlate(PowerPCCPU *cpu,
         }
         return 1;
     }
-    prtbe_addr = (pate.dw1 & PATE1_R_PRTB) + offset;
+    prtbe_addr = prtb + offset;
 
-    if (cpu->vhyp) {
+    if (vhyp_flat_addressing(cpu)) {
         prtbe0 = ldq_phys(cs->as, prtbe_addr);
     } else {
         /*
@@ -415,7 +492,7 @@ static int ppc_radix64_process_scoped_xlate(PowerPCCPU *cpu,
     *g_page_size = PRTBE_R_GET_RTS(prtbe0);
     base_addr = prtbe0 & PRTBE_R_RPDB;
     nls = prtbe0 & PRTBE_R_RPDS;
-    if (msr_hv || cpu->vhyp) {
+    if (FIELD_EX64(env->msr, MSR, HV) || vhyp_flat_addressing(cpu)) {
         /*
          * Can treat process table addresses as real addresses
          */
@@ -431,6 +508,7 @@ static int ppc_radix64_process_scoped_xlate(PowerPCCPU *cpu,
         }
     } else {
         uint64_t rpn, mask;
+        int level = 0;
 
         index = (eaddr & R_EADDR_MASK) >> (*g_page_size - nls); /* Shift */
         index &= ((1UL << nls) - 1);                            /* Mask */
@@ -450,8 +528,15 @@ static int ppc_radix64_process_scoped_xlate(PowerPCCPU *cpu,
                 return ret;
             }
 
-            ret = ppc_radix64_next_level(cs->as, eaddr & R_EADDR_MASK, &h_raddr,
-                                         &nls, g_page_size, &pte, &fault_cause);
+            if (!ppc_radix64_is_valid_level(level++, *g_page_size, nls)) {
+                fault_cause |= DSISR_R_BADCONFIG;
+                ret = 1;
+            } else {
+                ret = ppc_radix64_next_level(cs->as, eaddr & R_EADDR_MASK,
+                                             &h_raddr, &nls, g_page_size,
+                                             &pte, &fault_cause);
+            }
+
             if (ret) {
                 /* No valid pte */
                 if (guest_visible) {
@@ -519,7 +604,7 @@ static bool ppc_radix64_xlate_impl(PowerPCCPU *cpu, vaddr eaddr,
     relocation = !mmuidx_real(mmu_idx);
 
     /* HV or virtual hypervisor Real Mode Access */
-    if (!relocation && (mmuidx_hv(mmu_idx) || cpu->vhyp)) {
+    if (!relocation && (mmuidx_hv(mmu_idx) || vhyp_flat_addressing(cpu))) {
         /* In real mode top 4 effective addr bits (mostly) ignored */
         *raddr = eaddr & 0x0FFFFFFFFFFFFFFFULL;
 
@@ -552,21 +637,29 @@ static bool ppc_radix64_xlate_impl(PowerPCCPU *cpu, vaddr eaddr,
         return false;
     }
 
-    /* Get Process Table */
+    /* Get Partition Table */
     if (cpu->vhyp) {
         PPCVirtualHypervisorClass *vhc;
         vhc = PPC_VIRTUAL_HYPERVISOR_GET_CLASS(cpu->vhyp);
-        vhc->get_pate(cpu->vhyp, &pate);
+        if (!vhc->get_pate(cpu->vhyp, cpu, lpid, &pate)) {
+            if (guest_visible) {
+                ppc_radix64_raise_hsi(cpu, access_type, eaddr, eaddr,
+                                      DSISR_R_BADCONFIG);
+            }
+            return false;
+        }
     } else {
         if (!ppc64_v3_get_pate(cpu, lpid, &pate)) {
             if (guest_visible) {
-                ppc_radix64_raise_si(cpu, access_type, eaddr, DSISR_NOPTE);
+                ppc_radix64_raise_hsi(cpu, access_type, eaddr, eaddr,
+                                      DSISR_R_BADCONFIG);
             }
             return false;
         }
         if (!validate_pate(cpu, lpid, &pate)) {
             if (guest_visible) {
-                ppc_radix64_raise_si(cpu, access_type, eaddr, DSISR_R_BADCONFIG);
+                ppc_radix64_raise_hsi(cpu, access_type, eaddr, eaddr,
+                                      DSISR_R_BADCONFIG);
             }
             return false;
         }
@@ -596,7 +689,7 @@ static bool ppc_radix64_xlate_impl(PowerPCCPU *cpu, vaddr eaddr,
         g_raddr = eaddr & R_EADDR_MASK;
     }
 
-    if (cpu->vhyp) {
+    if (vhyp_flat_addressing(cpu)) {
         *raddr = g_raddr;
     } else {
         /*

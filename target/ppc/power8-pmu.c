@@ -22,8 +22,6 @@
 
 #if defined(TARGET_PPC64) && !defined(CONFIG_USER_ONLY)
 
-#define PMC_COUNTER_NEGATIVE_VAL 0x80000000UL
-
 static bool pmc_has_overflow_enabled(CPUPPCState *env, int sprn)
 {
     if (sprn == SPR_POWER_PMC1) {
@@ -88,49 +86,47 @@ static bool pmu_increment_insns(CPUPPCState *env, uint32_t num_insns)
     bool overflow_triggered = false;
     target_ulong tmp;
 
-    if (unlikely(ins_cnt & 0x1e)) {
-        if (ins_cnt & (1 << 1)) {
-            tmp = env->spr[SPR_POWER_PMC1];
-            tmp += num_insns;
-            if (tmp >= PMC_COUNTER_NEGATIVE_VAL && (mmcr0 & MMCR0_PMC1CE)) {
-                tmp = PMC_COUNTER_NEGATIVE_VAL;
-                overflow_triggered = true;
-            }
-            env->spr[SPR_POWER_PMC1] = tmp;
+    if (ins_cnt & (1 << 1)) {
+        tmp = env->spr[SPR_POWER_PMC1];
+        tmp += num_insns;
+        if (tmp >= PMC_COUNTER_NEGATIVE_VAL && (mmcr0 & MMCR0_PMC1CE)) {
+            tmp = PMC_COUNTER_NEGATIVE_VAL;
+            overflow_triggered = true;
         }
+        env->spr[SPR_POWER_PMC1] = tmp;
+    }
 
-        if (ins_cnt & (1 << 2)) {
-            tmp = env->spr[SPR_POWER_PMC2];
+    if (ins_cnt & (1 << 2)) {
+        tmp = env->spr[SPR_POWER_PMC2];
+        tmp += num_insns;
+        if (tmp >= PMC_COUNTER_NEGATIVE_VAL && (mmcr0 & MMCR0_PMCjCE)) {
+            tmp = PMC_COUNTER_NEGATIVE_VAL;
+            overflow_triggered = true;
+        }
+        env->spr[SPR_POWER_PMC2] = tmp;
+    }
+
+    if (ins_cnt & (1 << 3)) {
+        tmp = env->spr[SPR_POWER_PMC3];
+        tmp += num_insns;
+        if (tmp >= PMC_COUNTER_NEGATIVE_VAL && (mmcr0 & MMCR0_PMCjCE)) {
+            tmp = PMC_COUNTER_NEGATIVE_VAL;
+            overflow_triggered = true;
+        }
+        env->spr[SPR_POWER_PMC3] = tmp;
+    }
+
+    if (ins_cnt & (1 << 4)) {
+        target_ulong mmcr1 = env->spr[SPR_POWER_MMCR1];
+        int sel = extract64(mmcr1, MMCR1_PMC4EVT_EXTR, MMCR1_EVT_SIZE);
+        if (sel == 0x02 || (env->spr[SPR_CTRL] & CTRL_RUN)) {
+            tmp = env->spr[SPR_POWER_PMC4];
             tmp += num_insns;
             if (tmp >= PMC_COUNTER_NEGATIVE_VAL && (mmcr0 & MMCR0_PMCjCE)) {
                 tmp = PMC_COUNTER_NEGATIVE_VAL;
                 overflow_triggered = true;
             }
-            env->spr[SPR_POWER_PMC2] = tmp;
-        }
-
-        if (ins_cnt & (1 << 3)) {
-            tmp = env->spr[SPR_POWER_PMC3];
-            tmp += num_insns;
-            if (tmp >= PMC_COUNTER_NEGATIVE_VAL && (mmcr0 & MMCR0_PMCjCE)) {
-                tmp = PMC_COUNTER_NEGATIVE_VAL;
-                overflow_triggered = true;
-            }
-            env->spr[SPR_POWER_PMC3] = tmp;
-        }
-
-        if (ins_cnt & (1 << 4)) {
-            target_ulong mmcr1 = env->spr[SPR_POWER_MMCR1];
-            int sel = extract64(mmcr1, MMCR1_PMC4EVT_EXTR, MMCR1_EVT_SIZE);
-            if (sel == 0x02 || (env->spr[SPR_CTRL] & CTRL_RUN)) {
-                tmp = env->spr[SPR_POWER_PMC4];
-                tmp += num_insns;
-                if (tmp >= PMC_COUNTER_NEGATIVE_VAL && (mmcr0 & MMCR0_PMCjCE)) {
-                    tmp = PMC_COUNTER_NEGATIVE_VAL;
-                    overflow_triggered = true;
-                }
-                env->spr[SPR_POWER_PMC4] = tmp;
-            }
+            env->spr[SPR_POWER_PMC4] = tmp;
         }
     }
 
@@ -222,6 +218,20 @@ static void pmu_update_overflow_timers(CPUPPCState *env)
     }
 }
 
+static void pmu_delete_timers(CPUPPCState *env)
+{
+    QEMUTimer *pmc_overflow_timer;
+    int sprn;
+
+    for (sprn = SPR_POWER_PMC1; sprn <= SPR_POWER_PMC6; sprn++) {
+        pmc_overflow_timer = get_cyc_overflow_timer(env, sprn);
+
+        if (pmc_overflow_timer) {
+            timer_del(pmc_overflow_timer);
+        }
+    }
+}
+
 void helper_store_mmcr0(CPUPPCState *env, target_ulong value)
 {
     bool hflags_pmcc0 = (value & MMCR0_PMCC0) != 0;
@@ -271,12 +281,35 @@ static void fire_PMC_interrupt(PowerPCCPU *cpu)
 {
     CPUPPCState *env = &cpu->env;
 
-    if (!(env->spr[SPR_POWER_MMCR0] & MMCR0_EBE)) {
-        return;
+    pmu_update_cycles(env);
+
+    if (env->spr[SPR_POWER_MMCR0] & MMCR0_FCECE) {
+        env->spr[SPR_POWER_MMCR0] &= ~MMCR0_FCECE;
+        env->spr[SPR_POWER_MMCR0] |= MMCR0_FC;
+
+        /* Changing MMCR0_FC requires a new HFLAGS_INSN_CNT calc */
+        pmu_update_summaries(env);
+
+        /*
+         * Delete all pending timers if we need to freeze
+         * the PMC. We'll restart them when the PMC starts
+         * running again.
+         */
+        pmu_delete_timers(env);
     }
 
-    /* PMC interrupt not implemented yet */
-    return;
+    if (env->spr[SPR_POWER_MMCR0] & MMCR0_PMAE) {
+        env->spr[SPR_POWER_MMCR0] &= ~MMCR0_PMAE;
+        env->spr[SPR_POWER_MMCR0] |= MMCR0_PMAO;
+    }
+
+    raise_ebb_perfm_exception(env);
+}
+
+void helper_handle_pmc5_overflow(CPUPPCState *env)
+{
+    env->spr[SPR_POWER_PMC5] = PMC_COUNTER_NEGATIVE_VAL;
+    fire_PMC_interrupt(env_archcpu(env));
 }
 
 /* This helper assumes that the PMC is running. */

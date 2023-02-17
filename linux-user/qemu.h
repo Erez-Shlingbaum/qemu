@@ -40,14 +40,19 @@ struct image_info {
         abi_ulong       data_offset;
         abi_ulong       saved_auxv;
         abi_ulong       auxv_len;
-        abi_ulong       arg_start;
-        abi_ulong       arg_end;
-        abi_ulong       arg_strings;
-        abi_ulong       env_strings;
+        abi_ulong       argc;
+        abi_ulong       argv;
+        abi_ulong       envc;
+        abi_ulong       envp;
         abi_ulong       file_string;
         uint32_t        elf_flags;
         int             personality;
         abi_ulong       alignment;
+        bool            exec_stack;
+
+        /* Generic semihosting knows about these pointers. */
+        abi_ulong       arg_strings;   /* strings for argv */
+        abi_ulong       env_strings;   /* strings for envp; ends arg_strings */
 
         /* The fields below are used in FDPIC mode.  */
         abi_ulong       loadmap_addr;
@@ -94,10 +99,6 @@ struct emulated_sigtable {
     target_siginfo_t info;
 };
 
-/*
- * NOTE: we force a big alignment so that the stack stored after is
- * aligned too
- */
 typedef struct TaskState {
     pid_t ts_tid;     /* tid (or pid) of this task */
 #ifdef TARGET_ARM
@@ -158,7 +159,10 @@ typedef struct TaskState {
 
     /* This thread's sigaltstack, if it has one */
     struct target_sigaltstack sigaltstack_used;
-} __attribute__((aligned(16))) TaskState;
+
+    /* Start time of task after system boot in clock ticks */
+    uint64_t start_boottime;
+} TaskState;
 
 abi_long do_brk(abi_ulong new_brk);
 
@@ -237,7 +241,7 @@ static inline bool access_ok(CPUState *cpu, int type,
     } while (0)
 
 
-#ifdef TARGET_WORDS_BIGENDIAN
+#if TARGET_BIG_ENDIAN
 # define __put_user(x, hptr)  __put_user_e(x, hptr, be)
 # define __get_user(x, hptr)  __get_user_e(x, hptr, be)
 #else

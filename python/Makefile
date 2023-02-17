@@ -29,7 +29,7 @@ help:
 	@echo "    Performs no environment setup of any kind."
 	@echo ""
 	@echo "make develop:"
-	@echo "    Install deps needed for for 'make check',"
+	@echo "    Install deps needed for 'make check',"
 	@echo "    and install the qemu package in editable mode."
 	@echo "    (Can be used in or outside of a venv.)"
 	@echo ""
@@ -68,8 +68,6 @@ $(QEMU_VENV_DIR) $(QEMU_VENV_DIR)/bin/activate: setup.cfg
 		echo "ACTIVATE $(QEMU_VENV_DIR)";		\
 		. $(QEMU_VENV_DIR)/bin/activate;		\
 		echo "INSTALL qemu[devel] $(QEMU_VENV_DIR)";	\
-		pip install --disable-pip-version-check		\
-			"setuptools<60.0.0" 1>/dev/null;	\
 		make develop 1>/dev/null;			\
 	)
 	@touch $(QEMU_VENV_DIR)

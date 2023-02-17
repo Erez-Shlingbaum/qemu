@@ -2,6 +2,7 @@
 #include "cpu.h"
 #include "exec/exec-all.h"
 #include "sysemu/kvm.h"
+#include "sysemu/tcg.h"
 #include "helper_regs.h"
 #include "mmu-hash64.h"
 #include "migration/cpu.h"
@@ -20,7 +21,10 @@ static void post_load_update_msr(CPUPPCState *env)
      */
     env->msr ^= env->msr_mask & ~((1ULL << MSR_TGPR) | MSR_HVB);
     ppc_store_msr(env, msr);
-    pmu_update_summaries(env);
+
+    if (tcg_enabled()) {
+        pmu_update_summaries(env);
+    }
 }
 
 static int get_avr(QEMUFile *f, void *pv, size_t size,
@@ -153,7 +157,8 @@ static int cpu_pre_save(void *opaque)
         | PPC2_ATOMIC_ISA206 | PPC2_FP_CVT_ISA206
         | PPC2_FP_TST_ISA206 | PPC2_BCTAR_ISA207
         | PPC2_LSQ_ISA207 | PPC2_ALTIVEC_207
-        | PPC2_ISA205 | PPC2_ISA207S | PPC2_FP_CVT_S64 | PPC2_TM;
+        | PPC2_ISA205 | PPC2_ISA207S | PPC2_FP_CVT_S64 | PPC2_TM
+        | PPC2_MEM_LWSYNC;
 
     env->spr[SPR_LR] = env->lr;
     env->spr[SPR_CTR] = env->ctr;
@@ -205,9 +210,8 @@ static int cpu_pre_save(void *opaque)
         }
     }
 
-    /* Retain migration compatibility for pre 6.0 for 601 machines. */
-    env->hflags_compat_nmsr = (env->flags & POWERPC_FLAG_HID0_LE
-                               ? env->hflags & MSR_LE : 0);
+    /* Used to retain migration compatibility for pre 6.0 for 601 machines. */
+    env->hflags_compat_nmsr = 0;
 
     return 0;
 }
@@ -230,7 +234,7 @@ static bool pvr_match(PowerPCCPU *cpu, uint32_t pvr)
     if (pvr == pcc->pvr) {
         return true;
     }
-    return pcc->pvr_match(pcc, pvr);
+    return pcc->pvr_match(pcc, pvr, true);
 }
 
 static int cpu_post_load(void *opaque, int version_id)
@@ -414,14 +418,13 @@ static bool tm_needed(void *opaque)
 {
     PowerPCCPU *cpu = opaque;
     CPUPPCState *env = &cpu->env;
-    return msr_ts;
+    return FIELD_EX64(env->msr, MSR, TS);
 }
 
 static const VMStateDescription vmstate_tm = {
     .name = "cpu/tm",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .needed = tm_needed,
     .fields      = (VMStateField []) {
         VMSTATE_UINTTL_ARRAY(env.tm_gpr, PowerPCCPU, 32),
@@ -672,7 +675,6 @@ const VMStateDescription vmstate_ppc_cpu = {
     .name = "cpu",
     .version_id = 5,
     .minimum_version_id = 5,
-    .minimum_version_id_old = 4,
     .pre_save = cpu_pre_save,
     .post_load = cpu_post_load,
     .fields = (VMStateField[]) {

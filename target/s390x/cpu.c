@@ -26,7 +26,6 @@
 #include "s390x-internal.h"
 #include "kvm/kvm_s390x.h"
 #include "sysemu/kvm.h"
-#include "sysemu/reset.h"
 #include "qemu/module.h"
 #include "trace.h"
 #include "qapi/qapi-types-machine.h"
@@ -35,6 +34,9 @@
 #include "fpu/softfloat-helpers.h"
 #include "disas/capstone.h"
 #include "sysemu/tcg.h"
+#ifndef CONFIG_USER_ONLY
+#include "sysemu/reset.h"
+#endif
 
 #define CR0_RESET       0xE0UL
 #define CR14_RESET      0xC2000000UL;
@@ -86,6 +88,13 @@ static void s390_cpu_set_pc(CPUState *cs, vaddr value)
     S390CPU *cpu = S390_CPU(cs);
 
     cpu->env.psw.addr = value;
+}
+
+static vaddr s390_cpu_get_pc(CPUState *cs)
+{
+    S390CPU *cpu = S390_CPU(cs);
+
+    return cpu->env.psw.addr;
 }
 
 static bool s390_cpu_has_work(CPUState *cs)
@@ -178,7 +187,6 @@ static void s390_cpu_reset(CPUState *s, cpu_reset_type type)
 static void s390_cpu_disas_set_info(CPUState *cpu, disassemble_info *info)
 {
     info->mach = bfd_mach_s390_64;
-    info->print_insn = print_insn_s390;
     info->cap_arch = CS_ARCH_SYSZ;
     info->cap_insn_unit = 2;
     info->cap_insn_split = 6;
@@ -266,6 +274,7 @@ static void s390_cpu_reset_full(DeviceState *dev)
 
 static const struct TCGCPUOps s390_tcg_ops = {
     .initialize = s390x_translate_init,
+    .restore_state_to_opc = s390x_restore_state_to_opc,
 
 #ifdef CONFIG_USER_ONLY
     .record_sigsegv = s390_cpu_record_sigsegv,
@@ -298,6 +307,7 @@ static void s390_cpu_class_init(ObjectClass *oc, void *data)
     cc->has_work = s390_cpu_has_work;
     cc->dump_state = s390_cpu_dump_state;
     cc->set_pc = s390_cpu_set_pc;
+    cc->get_pc = s390_cpu_get_pc;
     cc->gdb_read_register = s390_cpu_gdb_read_register;
     cc->gdb_write_register = s390_cpu_gdb_write_register;
 #ifndef CONFIG_USER_ONLY

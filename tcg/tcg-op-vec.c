@@ -21,6 +21,8 @@
 #include "tcg/tcg.h"
 #include "tcg/tcg-op.h"
 #include "tcg/tcg-mo.h"
+#include "tcg-internal.h"
+
 
 /* Reduce the number of ifdefs below.  This assumes that all uses of
    TCGV_HIGH and TCGV_LOW are properly protected by a conditional that
@@ -150,7 +152,7 @@ bool tcg_can_emit_vecop_list(const TCGOpcode *list,
 
 void vec_gen_2(TCGOpcode opc, TCGType type, unsigned vece, TCGArg r, TCGArg a)
 {
-    TCGOp *op = tcg_emit_op(opc);
+    TCGOp *op = tcg_emit_op(opc, 2);
     TCGOP_VECL(op) = type - TCG_TYPE_V64;
     TCGOP_VECE(op) = vece;
     op->args[0] = r;
@@ -160,7 +162,7 @@ void vec_gen_2(TCGOpcode opc, TCGType type, unsigned vece, TCGArg r, TCGArg a)
 void vec_gen_3(TCGOpcode opc, TCGType type, unsigned vece,
                TCGArg r, TCGArg a, TCGArg b)
 {
-    TCGOp *op = tcg_emit_op(opc);
+    TCGOp *op = tcg_emit_op(opc, 3);
     TCGOP_VECL(op) = type - TCG_TYPE_V64;
     TCGOP_VECE(op) = vece;
     op->args[0] = r;
@@ -171,7 +173,7 @@ void vec_gen_3(TCGOpcode opc, TCGType type, unsigned vece,
 void vec_gen_4(TCGOpcode opc, TCGType type, unsigned vece,
                TCGArg r, TCGArg a, TCGArg b, TCGArg c)
 {
-    TCGOp *op = tcg_emit_op(opc);
+    TCGOp *op = tcg_emit_op(opc, 4);
     TCGOP_VECL(op) = type - TCG_TYPE_V64;
     TCGOP_VECE(op) = vece;
     op->args[0] = r;
@@ -183,7 +185,7 @@ void vec_gen_4(TCGOpcode opc, TCGType type, unsigned vece,
 static void vec_gen_6(TCGOpcode opc, TCGType type, unsigned vece, TCGArg r,
                       TCGArg a, TCGArg b, TCGArg c, TCGArg d, TCGArg e)
 {
-    TCGOp *op = tcg_emit_op(opc);
+    TCGOp *op = tcg_emit_op(opc, 6);
     TCGOP_VECL(op) = type - TCG_TYPE_V64;
     TCGOP_VECE(op) = vece;
     op->args[0] = r;
@@ -371,23 +373,32 @@ void tcg_gen_orc_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b)
 
 void tcg_gen_nand_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b)
 {
-    /* TODO: Add TCG_TARGET_HAS_nand_vec when adding a backend supports it. */
-    tcg_gen_and_vec(0, r, a, b);
-    tcg_gen_not_vec(0, r, r);
+    if (TCG_TARGET_HAS_nand_vec) {
+        vec_gen_op3(INDEX_op_nand_vec, 0, r, a, b);
+    } else {
+        tcg_gen_and_vec(0, r, a, b);
+        tcg_gen_not_vec(0, r, r);
+    }
 }
 
 void tcg_gen_nor_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b)
 {
-    /* TODO: Add TCG_TARGET_HAS_nor_vec when adding a backend supports it. */
-    tcg_gen_or_vec(0, r, a, b);
-    tcg_gen_not_vec(0, r, r);
+    if (TCG_TARGET_HAS_nor_vec) {
+        vec_gen_op3(INDEX_op_nor_vec, 0, r, a, b);
+    } else {
+        tcg_gen_or_vec(0, r, a, b);
+        tcg_gen_not_vec(0, r, r);
+    }
 }
 
 void tcg_gen_eqv_vec(unsigned vece, TCGv_vec r, TCGv_vec a, TCGv_vec b)
 {
-    /* TODO: Add TCG_TARGET_HAS_eqv_vec when adding a backend supports it. */
-    tcg_gen_xor_vec(0, r, a, b);
-    tcg_gen_not_vec(0, r, r);
+    if (TCG_TARGET_HAS_eqv_vec) {
+        vec_gen_op3(INDEX_op_eqv_vec, 0, r, a, b);
+    } else {
+        tcg_gen_xor_vec(0, r, a, b);
+        tcg_gen_not_vec(0, r, r);
+    }
 }
 
 static bool do_op2(unsigned vece, TCGv_vec r, TCGv_vec a, TCGOpcode opc)

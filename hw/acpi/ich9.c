@@ -34,7 +34,7 @@
 #include "sysemu/reset.h"
 #include "sysemu/runstate.h"
 #include "hw/acpi/acpi.h"
-#include "hw/acpi/tco.h"
+#include "hw/acpi/ich9_tco.h"
 
 #include "hw/i386/ich9.h"
 #include "hw/mem/pc-dimm.h"
@@ -163,7 +163,6 @@ static const VMStateDescription vmstate_memhp_state = {
     .name = "ich9_pm/memhp",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .needed = vmstate_test_use_memhp,
     .fields      = (VMStateField[]) {
         VMSTATE_MEMORY_HOTPLUG(acpi_memory_hotplug, ICH9LPCPMRegs),
@@ -181,7 +180,6 @@ static const VMStateDescription vmstate_tco_io_state = {
     .name = "ich9_pm/tco",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .needed = vmstate_test_use_tco,
     .fields      = (VMStateField[]) {
         VMSTATE_STRUCT(tco_regs, ICH9LPCPMRegs, 1, vmstate_tco_io_sts,
@@ -208,7 +206,6 @@ static const VMStateDescription vmstate_cpuhp_state = {
     .name = "ich9_pm/cpuhp",
     .version_id = 1,
     .minimum_version_id = 1,
-    .minimum_version_id_old = 1,
     .needed = vmstate_test_use_cpuhp,
     .pre_load = vmstate_cpuhp_pre_load,
     .fields      = (VMStateField[]) {
@@ -319,8 +316,9 @@ void ich9_pm_init(PCIDevice *lpc_pci, ICH9LPCPMRegs *pm,
 
     pm->smm_enabled = smm_enabled;
 
-    pm->enable_tco = true;
-    acpi_pm_tco_init(&pm->tco_regs, &pm->io);
+    if (pm->enable_tco) {
+        acpi_pm_tco_init(&pm->tco_regs, &pm->io);
+    }
 
     if (pm->use_acpi_hotplug_bridge) {
         acpi_pcihp_init(OBJECT(lpc_pci),
@@ -443,6 +441,7 @@ void ich9_pm_add_properties(Object *obj, ICH9LPCPMRegs *pm)
     pm->s4_val = 2;
     pm->use_acpi_hotplug_bridge = true;
     pm->keep_pci_slot_hpc = true;
+    pm->enable_tco = true;
 
     object_property_add_uint32_ptr(obj, ACPI_PM_PROP_PM_IO_BASE,
                                    &pm->pm_io_base, OBJ_PROP_FLAG_READ);

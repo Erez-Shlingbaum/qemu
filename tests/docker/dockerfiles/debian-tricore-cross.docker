@@ -20,16 +20,15 @@ RUN apt update && \
        bzip2 \
        ca-certificates \
        ccache \
+       flex \
        g++ \
        gcc \
        git \
        libglib2.0-dev \
        libpixman-1-dev \
-       libtest-harness-perl \
        locales \
        make \
        ninja-build \
-       perl-base \
        pkgconf \
        python3-pip \
        python3-setuptools \

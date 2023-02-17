@@ -22,19 +22,21 @@ void xs_node_destroy(struct xs_handle *xsh,  xs_transaction_t tid,
 void xs_node_vprintf(struct xs_handle *xsh,  xs_transaction_t tid,
                      const char *node, const char *key, Error **errp,
                      const char *fmt, va_list ap)
-    GCC_FMT_ATTR(6, 0);
+    G_GNUC_PRINTF(6, 0);
 void xs_node_printf(struct xs_handle *xsh,  xs_transaction_t tid,
                     const char *node, const char *key, Error **errp,
                     const char *fmt, ...)
-    GCC_FMT_ATTR(6, 7);
+    G_GNUC_PRINTF(6, 7);
 
 /* Read from node/key unless node is empty, in which case read from key */
 int xs_node_vscanf(struct xs_handle *xsh,  xs_transaction_t tid,
                    const char *node, const char *key, Error **errp,
-                   const char *fmt, va_list ap);
+                   const char *fmt, va_list ap)
+    G_GNUC_SCANF(6, 0);
 int xs_node_scanf(struct xs_handle *xsh,  xs_transaction_t tid,
                   const char *node, const char *key, Error **errp,
-                  const char *fmt, ...);
+                  const char *fmt, ...)
+    G_GNUC_SCANF(6, 7);
 
 /* Watch node/key unless node is empty, in which case watch key */
 void xs_node_watch(struct xs_handle *xsh, const char *node, const char *key,

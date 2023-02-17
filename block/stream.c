@@ -64,6 +64,15 @@ static int stream_prepare(Job *job)
     bdrv_cor_filter_drop(s->cor_filter_bs);
     s->cor_filter_bs = NULL;
 
+    /*
+     * bdrv_set_backing_hd() requires that unfiltered_bs is drained. Drain
+     * already here and use bdrv_set_backing_hd_drained() instead because
+     * the polling during drained_begin() might change the graph, and if we do
+     * this only later, we may end up working with the wrong base node (or it
+     * might even have gone away by the time we want to use it).
+     */
+    bdrv_drained_begin(unfiltered_bs);
+
     base = bdrv_filter_or_cow_bs(s->above_base);
     unfiltered_base = bdrv_skip_filters(base);
 
@@ -75,14 +84,24 @@ static int stream_prepare(Job *job)
                 base_fmt = unfiltered_base->drv->format_name;
             }
         }
-        bdrv_set_backing_hd(unfiltered_bs, base, &local_err);
+
+        bdrv_set_backing_hd_drained(unfiltered_bs, base, &local_err);
+
+        /*
+         * This call will do I/O, so the graph can change again from here on.
+         * We have already completed the graph change, so we are not in danger
+         * of operating on the wrong node any more if this happens.
+         */
         ret = bdrv_change_backing_file(unfiltered_bs, base_id, base_fmt, false);
         if (local_err) {
             error_report_err(local_err);
-            return -EPERM;
+            ret = -EPERM;
+            goto out;
         }
     }
 
+out:
+    bdrv_drained_end(unfiltered_bs);
     return ret;
 }
 
@@ -219,6 +238,8 @@ void stream_start(const char *job_id, BlockDriverState *bs,
     BlockDriverState *above_base;
     QDict *opts;
     int ret;
+
+    GLOBAL_STATE_CODE();
 
     assert(!(base && bottom));
     assert(!(backing_file_str && bottom));

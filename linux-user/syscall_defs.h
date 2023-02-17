@@ -74,7 +74,7 @@
     || defined(TARGET_M68K) || defined(TARGET_CRIS) \
     || defined(TARGET_S390X) || defined(TARGET_OPENRISC) \
     || defined(TARGET_NIOS2) || defined(TARGET_RISCV) \
-    || defined(TARGET_XTENSA)
+    || defined(TARGET_XTENSA) || defined(TARGET_LOONGARCH64)
 
 #define TARGET_IOC_SIZEBITS	14
 #define TARGET_IOC_DIRBITS	2
@@ -717,57 +717,7 @@ typedef struct target_siginfo {
 #define TARGET_TRAP_HWBKPT      (4)     /* hardware breakpoint/watchpoint */
 #define TARGET_TRAP_UNK         (5)     /* undiagnosed trap */
 
-struct target_rlimit {
-        abi_ulong   rlim_cur;
-        abi_ulong   rlim_max;
-};
-
-#if defined(TARGET_ALPHA)
-#define TARGET_RLIM_INFINITY	0x7fffffffffffffffull
-#elif defined(TARGET_MIPS) || (defined(TARGET_SPARC) && TARGET_ABI_BITS == 32)
-#define TARGET_RLIM_INFINITY	0x7fffffffUL
-#else
-#define TARGET_RLIM_INFINITY	((abi_ulong)-1)
-#endif
-
-#if defined(TARGET_MIPS)
-#define TARGET_RLIMIT_CPU		0
-#define TARGET_RLIMIT_FSIZE		1
-#define TARGET_RLIMIT_DATA		2
-#define TARGET_RLIMIT_STACK		3
-#define TARGET_RLIMIT_CORE		4
-#define TARGET_RLIMIT_RSS		7
-#define TARGET_RLIMIT_NPROC		8
-#define TARGET_RLIMIT_NOFILE		5
-#define TARGET_RLIMIT_MEMLOCK		9
-#define TARGET_RLIMIT_AS		6
-#define TARGET_RLIMIT_LOCKS		10
-#define TARGET_RLIMIT_SIGPENDING	11
-#define TARGET_RLIMIT_MSGQUEUE		12
-#define TARGET_RLIMIT_NICE		13
-#define TARGET_RLIMIT_RTPRIO		14
-#else
-#define TARGET_RLIMIT_CPU		0
-#define TARGET_RLIMIT_FSIZE		1
-#define TARGET_RLIMIT_DATA		2
-#define TARGET_RLIMIT_STACK		3
-#define TARGET_RLIMIT_CORE		4
-#define TARGET_RLIMIT_RSS		5
-#if defined(TARGET_SPARC)
-#define TARGET_RLIMIT_NOFILE		6
-#define TARGET_RLIMIT_NPROC		7
-#else
-#define TARGET_RLIMIT_NPROC		6
-#define TARGET_RLIMIT_NOFILE		7
-#endif
-#define TARGET_RLIMIT_MEMLOCK		8
-#define TARGET_RLIMIT_AS		9
-#define TARGET_RLIMIT_LOCKS		10
-#define TARGET_RLIMIT_SIGPENDING	11
-#define TARGET_RLIMIT_MSGQUEUE		12
-#define TARGET_RLIMIT_NICE		13
-#define TARGET_RLIMIT_RTPRIO		14
-#endif
+#include "target_resource.h"
 
 struct target_pollfd {
     int fd;           /* file descriptor */
@@ -1296,7 +1246,7 @@ struct target_winsize {
 
 #include "termbits.h"
 
-#if defined(TARGET_MIPS)
+#if defined(TARGET_MIPS) || defined(TARGET_XTENSA)
 #define TARGET_PROT_SEM         0x10
 #else
 #define TARGET_PROT_SEM         0x08
@@ -1608,7 +1558,7 @@ struct target_stat64 {
 struct target_stat {
 	abi_ulong st_dev;
 	abi_ulong st_ino;
-#if defined(TARGET_PPC64) && !defined(TARGET_ABI32)
+#if defined(TARGET_PPC64)
 	abi_ulong st_nlink;
 	unsigned int st_mode;
 #else
@@ -1629,12 +1579,12 @@ struct target_stat {
 	abi_ulong  target_st_ctime_nsec;
 	abi_ulong  __unused4;
 	abi_ulong  __unused5;
-#if defined(TARGET_PPC64) && !defined(TARGET_ABI32)
+#if defined(TARGET_PPC64)
 	abi_ulong  __unused6;
 #endif
 };
 
-#if !defined(TARGET_PPC64) || defined(TARGET_ABI32)
+#if !defined(TARGET_PPC64)
 #define TARGET_HAS_STRUCT_STAT64
 struct QEMU_PACKED target_stat64 {
 	unsigned long long st_dev;
@@ -2246,6 +2196,10 @@ struct target_stat64 {
     uint64_t   st_ino;
 };
 
+#elif defined(TARGET_LOONGARCH64)
+
+/* LoongArch no newfstatat/fstat syscall. */
+
 #else
 #error unsupported CPU
 #endif
@@ -2308,7 +2262,8 @@ struct target_statfs64 {
 };
 #elif (defined(TARGET_PPC64) || defined(TARGET_X86_64) || \
        defined(TARGET_SPARC64) || defined(TARGET_AARCH64) || \
-       defined(TARGET_RISCV)) && !defined(TARGET_ABI32)
+       defined(TARGET_RISCV) || defined(TARGET_LOONGARCH64)) && \
+       !defined(TARGET_ABI32)
 struct target_statfs {
 	abi_long f_type;
 	abi_long f_bsize;
@@ -2745,6 +2700,9 @@ struct target_drm_i915_getparam {
 #define FUTEX_TRYLOCK_PI        8
 #define FUTEX_WAIT_BITSET       9
 #define FUTEX_WAKE_BITSET       10
+#define FUTEX_WAIT_REQUEUE_PI   11
+#define FUTEX_CMP_REQUEUE_PI    12
+#define FUTEX_LOCK_PI2          13
 
 #define FUTEX_PRIVATE_FLAG      128
 #define FUTEX_CLOCK_REALTIME    256
@@ -2772,10 +2730,6 @@ struct target_epoll_event {
 #define TARGET_EP_MAX_EVENTS (INT_MAX / sizeof(struct target_epoll_event))
 
 #endif
-struct target_rlimit64 {
-    uint64_t rlim_cur;
-    uint64_t rlim_max;
-};
 
 struct target_ucred {
     uint32_t pid;

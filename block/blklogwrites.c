@@ -12,6 +12,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/sockets.h" /* for EINPROGRESS on Windows */
+#include "block/block-io.h"
 #include "block/block_int.h"
 #include "qapi/qmp/qdict.h"
 #include "qapi/qmp/qstring.h"
@@ -107,8 +108,8 @@ static uint64_t blk_log_writes_find_cur_log_sector(BdrvChild *log,
     struct log_write_entry cur_entry;
 
     while (cur_idx < nr_entries) {
-        int read_ret = bdrv_pread(log, cur_sector << sector_bits, &cur_entry,
-                                  sizeof(cur_entry));
+        int read_ret = bdrv_pread(log, cur_sector << sector_bits,
+                                  sizeof(cur_entry), &cur_entry, 0);
         if (read_ret < 0) {
             error_setg_errno(errp, -read_ret,
                              "Failed to read log entry %"PRIu64, cur_idx);
@@ -155,11 +156,8 @@ static int blk_log_writes_open(BlockDriverState *bs, QDict *options, int flags,
     }
 
     /* Open the file */
-    bs->file = bdrv_open_child(NULL, options, "file", bs, &child_of_bds,
-                               BDRV_CHILD_FILTERED | BDRV_CHILD_PRIMARY, false,
-                               errp);
-    if (!bs->file) {
-        ret = -EINVAL;
+    ret = bdrv_open_file_child(NULL, options, "file", bs, errp);
+    if (ret < 0) {
         goto fail;
     }
 
@@ -190,7 +188,7 @@ static int blk_log_writes_open(BlockDriverState *bs, QDict *options, int flags,
             log_sb.nr_entries = cpu_to_le64(0);
             log_sb.sectorsize = cpu_to_le32(BDRV_SECTOR_SIZE);
         } else {
-            ret = bdrv_pread(s->log_file, 0, &log_sb, sizeof(log_sb));
+            ret = bdrv_pread(s->log_file, 0, sizeof(log_sb), &log_sb, 0);
             if (ret < 0) {
                 error_setg_errno(errp, -ret, "Could not read log superblock");
                 goto fail_log;
@@ -257,10 +255,6 @@ fail_log:
         s->log_file = NULL;
     }
 fail:
-    if (ret < 0) {
-        bdrv_unref_child(bs, bs->file);
-        bs->file = NULL;
-    }
     qemu_opts_del(opts);
     return ret;
 }
@@ -273,9 +267,9 @@ static void blk_log_writes_close(BlockDriverState *bs)
     s->log_file = NULL;
 }
 
-static int64_t blk_log_writes_getlength(BlockDriverState *bs)
+static int64_t coroutine_fn blk_log_writes_co_getlength(BlockDriverState *bs)
 {
-    return bdrv_getlength(bs->file->bs);
+    return bdrv_co_getlength(bs->file->bs);
 }
 
 static void blk_log_writes_child_perm(BlockDriverState *bs, BdrvChild *c,
@@ -504,7 +498,7 @@ static BlockDriver bdrv_blk_log_writes = {
 
     .bdrv_open              = blk_log_writes_open,
     .bdrv_close             = blk_log_writes_close,
-    .bdrv_getlength         = blk_log_writes_getlength,
+    .bdrv_co_getlength      = blk_log_writes_co_getlength,
     .bdrv_child_perm        = blk_log_writes_child_perm,
     .bdrv_refresh_limits    = blk_log_writes_refresh_limits,
 

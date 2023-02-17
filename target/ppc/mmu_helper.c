@@ -279,88 +279,6 @@ void helper_store_dbatl(CPUPPCState *env, uint32_t nr, target_ulong value)
     env->DBAT[1][nr] = value;
 }
 
-void helper_store_601_batu(CPUPPCState *env, uint32_t nr, target_ulong value)
-{
-    target_ulong mask;
-#if defined(FLUSH_ALL_TLBS)
-    int do_inval;
-#endif
-
-    dump_store_bat(env, 'I', 0, nr, value);
-    if (env->IBAT[0][nr] != value) {
-#if defined(FLUSH_ALL_TLBS)
-        do_inval = 0;
-#endif
-        mask = (env->IBAT[1][nr] << 17) & 0x0FFE0000UL;
-        if (env->IBAT[1][nr] & 0x40) {
-            /* Invalidate BAT only if it is valid */
-#if !defined(FLUSH_ALL_TLBS)
-            do_invalidate_BAT(env, env->IBAT[0][nr], mask);
-#else
-            do_inval = 1;
-#endif
-        }
-        /*
-         * When storing valid upper BAT, mask BEPI and BRPN and
-         * invalidate all TLBs covered by this BAT
-         */
-        env->IBAT[0][nr] = (value & 0x00001FFFUL) |
-            (value & ~0x0001FFFFUL & ~mask);
-        env->DBAT[0][nr] = env->IBAT[0][nr];
-        if (env->IBAT[1][nr] & 0x40) {
-#if !defined(FLUSH_ALL_TLBS)
-            do_invalidate_BAT(env, env->IBAT[0][nr], mask);
-#else
-            do_inval = 1;
-#endif
-        }
-#if defined(FLUSH_ALL_TLBS)
-        if (do_inval) {
-            tlb_flush(env_cpu(env));
-        }
-#endif
-    }
-}
-
-void helper_store_601_batl(CPUPPCState *env, uint32_t nr, target_ulong value)
-{
-#if !defined(FLUSH_ALL_TLBS)
-    target_ulong mask;
-#else
-    int do_inval;
-#endif
-
-    dump_store_bat(env, 'I', 1, nr, value);
-    if (env->IBAT[1][nr] != value) {
-#if defined(FLUSH_ALL_TLBS)
-        do_inval = 0;
-#endif
-        if (env->IBAT[1][nr] & 0x40) {
-#if !defined(FLUSH_ALL_TLBS)
-            mask = (env->IBAT[1][nr] << 17) & 0x0FFE0000UL;
-            do_invalidate_BAT(env, env->IBAT[0][nr], mask);
-#else
-            do_inval = 1;
-#endif
-        }
-        if (value & 0x40) {
-#if !defined(FLUSH_ALL_TLBS)
-            mask = (value << 17) & 0x0FFE0000UL;
-            do_invalidate_BAT(env, env->IBAT[0][nr], mask);
-#else
-            do_inval = 1;
-#endif
-        }
-        env->IBAT[1][nr] = value;
-        env->DBAT[1][nr] = value;
-#if defined(FLUSH_ALL_TLBS)
-        if (do_inval) {
-            tlb_flush(env_cpu(env));
-        }
-#endif
-    }
-}
-
 /*****************************************************************************/
 /* TLB management */
 void ppc_tlb_invalidate_all(CPUPPCState *env)
@@ -392,7 +310,6 @@ void ppc_tlb_invalidate_all(CPUPPCState *env)
         booke206_flush_tlb(env, -1, 0);
         break;
     case POWERPC_MMU_32B:
-    case POWERPC_MMU_601:
         env->tlb_need_flush = 0;
         tlb_flush(env_cpu(env));
         break;
@@ -426,7 +343,6 @@ void ppc_tlb_invalidate_one(CPUPPCState *env, target_ulong addr)
         }
         break;
     case POWERPC_MMU_32B:
-    case POWERPC_MMU_601:
         /*
          * Actual CPUs invalidate entire congruence classes based on
          * the geometry of their TLBs and some OSes take that into
@@ -512,6 +428,160 @@ void helper_tlbie(CPUPPCState *env, target_ulong addr)
 {
     ppc_tlb_invalidate_one(env, addr);
 }
+
+#if defined(TARGET_PPC64)
+
+/* Invalidation Selector */
+#define TLBIE_IS_VA         0
+#define TLBIE_IS_PID        1
+#define TLBIE_IS_LPID       2
+#define TLBIE_IS_ALL        3
+
+/* Radix Invalidation Control */
+#define TLBIE_RIC_TLB       0
+#define TLBIE_RIC_PWC       1
+#define TLBIE_RIC_ALL       2
+#define TLBIE_RIC_GRP       3
+
+/* Radix Actual Page sizes */
+#define TLBIE_R_AP_4K       0
+#define TLBIE_R_AP_64K      5
+#define TLBIE_R_AP_2M       1
+#define TLBIE_R_AP_1G       2
+
+/* RB field masks */
+#define TLBIE_RB_EPN_MASK   PPC_BITMASK(0, 51)
+#define TLBIE_RB_IS_MASK    PPC_BITMASK(52, 53)
+#define TLBIE_RB_AP_MASK    PPC_BITMASK(56, 58)
+
+void helper_tlbie_isa300(CPUPPCState *env, target_ulong rb, target_ulong rs,
+                         uint32_t flags)
+{
+    unsigned ric = (flags & TLBIE_F_RIC_MASK) >> TLBIE_F_RIC_SHIFT;
+    /*
+     * With the exception of the checks for invalid instruction forms,
+     * PRS is currently ignored, because we don't know if a given TLB entry
+     * is process or partition scoped.
+     */
+    bool prs = flags & TLBIE_F_PRS;
+    bool r = flags & TLBIE_F_R;
+    bool local = flags & TLBIE_F_LOCAL;
+    bool effR;
+    unsigned is = extract64(rb, PPC_BIT_NR(53), 2);
+    unsigned ap;        /* actual page size */
+    target_ulong addr, pgoffs_mask;
+
+    qemu_log_mask(CPU_LOG_MMU,
+        "%s: local=%d addr=" TARGET_FMT_lx " ric=%u prs=%d r=%d is=%u\n",
+        __func__, local, rb & TARGET_PAGE_MASK, ric, prs, r, is);
+
+    effR = FIELD_EX64(env->msr, MSR, HV) ? r : env->spr[SPR_LPCR] & LPCR_HR;
+
+    /* Partial TLB invalidation is supported for Radix only for now. */
+    if (!effR) {
+        goto inval_all;
+    }
+
+    /* Check for invalid instruction forms (effR=1). */
+    if (unlikely(ric == TLBIE_RIC_GRP ||
+                 ((ric == TLBIE_RIC_PWC || ric == TLBIE_RIC_ALL) &&
+                                           is == TLBIE_IS_VA) ||
+                 (!prs && is == TLBIE_IS_PID))) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "%s: invalid instruction form: ric=%u prs=%d r=%d is=%u\n",
+            __func__, ric, prs, r, is);
+        goto invalid;
+    }
+
+    /* We don't cache Page Walks. */
+    if (ric == TLBIE_RIC_PWC) {
+        if (local) {
+            unsigned set = extract64(rb, PPC_BIT_NR(51), 12);
+            if (set != 0) {
+                qemu_log_mask(LOG_GUEST_ERROR, "%s: invalid set: %d\n",
+                              __func__, set);
+                goto invalid;
+            }
+        }
+        return;
+    }
+
+    /*
+     * Invalidation by LPID or PID is not supported, so fallback
+     * to full TLB flush in these cases.
+     */
+    if (is != TLBIE_IS_VA) {
+        goto inval_all;
+    }
+
+    /*
+     * The results of an attempt to invalidate a translation outside of
+     * quadrant 0 for Radix Tree translation (effR=1, RIC=0, PRS=1, IS=0,
+     * and EA 0:1 != 0b00) are boundedly undefined.
+     */
+    if (unlikely(ric == TLBIE_RIC_TLB && prs && is == TLBIE_IS_VA &&
+                 (rb & R_EADDR_QUADRANT) != R_EADDR_QUADRANT0)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+            "%s: attempt to invalidate a translation outside of quadrant 0\n",
+            __func__);
+        goto inval_all;
+    }
+
+    assert(is == TLBIE_IS_VA);
+    assert(ric == TLBIE_RIC_TLB || ric == TLBIE_RIC_ALL);
+
+    ap = extract64(rb, PPC_BIT_NR(58), 3);
+    switch (ap) {
+    case TLBIE_R_AP_4K:
+        pgoffs_mask = 0xfffull;
+        break;
+
+    case TLBIE_R_AP_64K:
+        pgoffs_mask = 0xffffull;
+        break;
+
+    case TLBIE_R_AP_2M:
+        pgoffs_mask = 0x1fffffull;
+        break;
+
+    case TLBIE_R_AP_1G:
+        pgoffs_mask = 0x3fffffffull;
+        break;
+
+    default:
+        /*
+         * If the value specified in RS 0:31, RS 32:63, RB 54:55, RB 56:58,
+         * RB 44:51, or RB 56:63, when it is needed to perform the specified
+         * operation, is not supported by the implementation, the instruction
+         * is treated as if the instruction form were invalid.
+         */
+        qemu_log_mask(LOG_GUEST_ERROR, "%s: invalid AP: %d\n", __func__, ap);
+        goto invalid;
+    }
+
+    addr = rb & TLBIE_RB_EPN_MASK & ~pgoffs_mask;
+
+    if (local) {
+        tlb_flush_page(env_cpu(env), addr);
+    } else {
+        tlb_flush_page_all_cpus(env_cpu(env), addr);
+    }
+    return;
+
+inval_all:
+    env->tlb_need_flush |= TLB_NEED_LOCAL_FLUSH;
+    if (!local) {
+        env->tlb_need_flush |= TLB_NEED_GLOBAL_FLUSH;
+    }
+    return;
+
+invalid:
+    raise_exception_err_ra(env, POWERPC_EXCP_PROGRAM,
+                           POWERPC_EXCP_INVAL |
+                           POWERPC_EXCP_INVAL_INVAL, GETPC());
+}
+
+#endif
 
 void helper_tlbiva(CPUPPCState *env, target_ulong addr)
 {
@@ -664,6 +734,14 @@ static inline int booke_page_size_to_tlb(target_ulong page_size)
 #define PPC4XX_TLBLO_ATTR_MASK      0x000000FF
 #define PPC4XX_TLBLO_RPN_MASK       0xFFFFFC00
 
+void helper_store_40x_pid(CPUPPCState *env, target_ulong val)
+{
+    if (env->spr[SPR_40x_PID] != val) {
+        env->spr[SPR_40x_PID] = val;
+        env->tlb_need_flush |= TLB_NEED_LOCAL_FLUSH;
+    }
+}
+
 target_ulong helper_4xx_tlbre_hi(CPUPPCState *env, target_ulong entry)
 {
     ppcemb_tlb_t *tlb;
@@ -681,7 +759,7 @@ target_ulong helper_4xx_tlbre_hi(CPUPPCState *env, target_ulong entry)
         size = PPC4XX_TLBHI_SIZE_DEFAULT;
     }
     ret |= size << PPC4XX_TLBHI_SIZE_SHIFT;
-    env->spr[SPR_40x_PID] = tlb->PID;
+    helper_store_40x_pid(env, tlb->PID);
     return ret;
 }
 
@@ -748,7 +826,7 @@ void helper_4xx_tlbwe_hi(CPUPPCState *env, target_ulong entry,
         tlb->prot &= ~PAGE_VALID;
     }
     tlb->PID = env->spr[SPR_40x_PID]; /* PID */
-    qemu_log_mask(CPU_LOG_MMU, "%s: set up TLB %d RPN " TARGET_FMT_plx
+    qemu_log_mask(CPU_LOG_MMU, "%s: set up TLB %d RPN " HWADDR_FMT_plx
                   " EPN " TARGET_FMT_lx " size " TARGET_FMT_lx
                   " prot %c%c%c%c PID %d\n", __func__,
                   (int)entry, tlb->RPN, tlb->EPN, tlb->size,
@@ -786,7 +864,7 @@ void helper_4xx_tlbwe_lo(CPUPPCState *env, target_ulong entry,
     if (val & PPC4XX_TLBLO_WR) {
         tlb->prot |= PAGE_WRITE;
     }
-    qemu_log_mask(CPU_LOG_MMU, "%s: set up TLB %d RPN " TARGET_FMT_plx
+    qemu_log_mask(CPU_LOG_MMU, "%s: set up TLB %d RPN " HWADDR_FMT_plx
                   " EPN " TARGET_FMT_lx
                   " size " TARGET_FMT_lx " prot %c%c%c%c PID %d\n", __func__,
                   (int)entry, tlb->RPN, tlb->EPN, tlb->size,
@@ -794,6 +872,8 @@ void helper_4xx_tlbwe_lo(CPUPPCState *env, target_ulong entry,
                   tlb->prot & PAGE_WRITE ? 'w' : '-',
                   tlb->prot & PAGE_EXEC ? 'x' : '-',
                   tlb->prot & PAGE_VALID ? 'v' : '-', (int)tlb->PID);
+
+    env->tlb_need_flush |= TLB_NEED_LOCAL_FLUSH;
 }
 
 target_ulong helper_4xx_tlbsx(CPUPPCState *env, target_ulong address)
@@ -1009,7 +1089,7 @@ void helper_booke206_tlbwe(CPUPPCState *env)
     }
 
     if (((env->spr[SPR_BOOKE_MAS0] & MAS0_ATSEL) == MAS0_ATSEL_LRAT) &&
-        !msr_gs) {
+        !FIELD_EX64(env->msr, MSR, GS)) {
         /* XXX we don't support direct LRAT setting yet */
         fprintf(stderr, "cpu: don't support LRAT setting yet\n");
         return;
@@ -1036,7 +1116,7 @@ void helper_booke206_tlbwe(CPUPPCState *env)
                                POWERPC_EXCP_INVAL_INVAL, GETPC());
     }
 
-    if (msr_gs) {
+    if (FIELD_EX64(env->msr, MSR, GS)) {
         cpu_abort(env_cpu(env), "missing HV implementation\n");
     }
 
@@ -1077,7 +1157,7 @@ void helper_booke206_tlbwe(CPUPPCState *env)
     /* Add a mask for page attributes */
     mask |= MAS2_ACM | MAS2_VLE | MAS2_W | MAS2_I | MAS2_M | MAS2_G | MAS2_E;
 
-    if (!msr_cm) {
+    if (!FIELD_EX64(env->msr, MSR, CM)) {
         /*
          * Executing a tlbwe instruction in 32-bit mode will set bits
          * 0:31 of the TLB EPN field to zero.
