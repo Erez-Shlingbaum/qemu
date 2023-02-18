@@ -153,14 +153,14 @@ static unsigned long int get_env_symbol(const char *name)
 }
 
 // We support only X86_64
-//typedef uint64_t target_ulong;
-//
-//extern int kvm_insert_breakpoint(
-//        CPUState *cpu,
-//        target_ulong addr,
-//        target_ulong len,
-//        int type
-//);
+typedef uint64_t target_ulong;
+
+extern int kvm_insert_breakpoint(
+        CPUState *cpu,
+        target_ulong addr,
+        target_ulong len,
+        int type
+);
 
 void hyperwall_hook_init(void)
 {

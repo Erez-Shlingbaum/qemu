@@ -5920,3 +5920,22 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
         }
     }
 }
+
+void kvm_arch_handle_guest_debug(CPUState *cpu)
+{
+    X86CPU *x86_cpu = X86_CPU(cpu);
+    CPUX86State *env = &x86_cpu->env;
+    cpu_synchronize_state(cpu);
+
+//   HYPER_DEBUG("ENV EIP = 0x%x", env->eip);
+//   HYPER_DEBUG("system_map_sock_sendmsg = 0x%x", system_map_sock_sendmsg);
+//   HYPER_DEBUG("system_map_arp_xmit = 0x%x", system_map_arp_xmit);
+    if(env->eip == system_map_sock_sendmsg)
+    {
+        kvm_arch_handle_sock_sendmsg_bp(cpu);
+    }
+    else if(env->eip == system_map_arp_xmit)
+    {
+        kvm_arch_handle_arp_xmit_bp(cpu);
+    }
+}
