@@ -191,8 +191,12 @@ void hyperwall_hook_init(void)
     CPU_FOREACH(cs) {
         fprintf(hyperwall_debug_file, "Inserting BP\n");
         // There are 5 nops at the start of the syscall, each of size 1
-        kvm_insert_breakpoint(cs, system_map_sock_sendmsg, 5, GDB_BREAKPOINT_SW);
-        kvm_insert_breakpoint(cs, system_map_arp_xmit, 5, GDB_BREAKPOINT_SW);
+        x = kvm_insert_breakpoint(cs, GDB_BREAKPOINT_SW, system_map_sock_sendmsg, 5);
+        y = kvm_insert_breakpoint(cs, GDB_BREAKPOINT_SW, system_map_arp_xmit, 5);
+
+        // TODO: exit or something
+        fprintf(hyperwall_debug_file, "kvm_insert_breakpoint return value = %d\n", x);
+        fprintf(hyperwall_debug_file, "kvm_insert_breakpoint return value = %d\n", y);
     }
 
     hyperwall_is_hooks_on = true;
