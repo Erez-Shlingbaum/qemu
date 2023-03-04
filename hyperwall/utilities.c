@@ -130,6 +130,8 @@ void hyperwall_init(void)
     setbuf(hyperwall_e1000_pcap_file, NULL);
 
     fprintf(hyperwall_debug_file, "Hyperwall init success\n");
+
+    fflush(hyperwall_debug_file);
 }
 
 static unsigned long int get_env_symbol(const char *name)
@@ -187,6 +189,8 @@ void hyperwall_hook_init(void)
     system_map_arp_xmit = get_env_symbol("ARP_XMIT") + hyperwall_kaslr_diff;
     fprintf(hyperwall_debug_file, "system_map_arp_xmit = %lu\n", system_map_arp_xmit);
 
+    int x, y;
+    x = y = 1337;
     CPUState *cs;
     CPU_FOREACH(cs) {
         fprintf(hyperwall_debug_file, "Inserting BP\n");
@@ -198,7 +202,7 @@ void hyperwall_hook_init(void)
         fprintf(hyperwall_debug_file, "kvm_insert_breakpoint return value = %d\n", x);
         fprintf(hyperwall_debug_file, "kvm_insert_breakpoint return value = %d\n", y);
     }
-
+    fflush(hyperwall_debug_file);
     hyperwall_is_hooks_on = true;
 }
 

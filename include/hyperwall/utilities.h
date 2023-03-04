@@ -99,6 +99,14 @@ struct list_head
     struct list_head *next, *prev;
 };
 
+struct llist_node
+{
+    struct llist_node *next;                 /*     0     8 */
+
+    /* size: 8, cachelines: 1, members: 1 */
+    /* last cacheline: 8 bytes */
+};
+
 struct hlist_head
 {
     struct hlist_node *first;
@@ -229,6 +237,15 @@ typedef unsigned int sk_buff_data_t;
 // TODO: from vmlinux syms
 typedef uint32_t refcount_t;
 
+//typedef uint8_t __u8;
+//typedef uint16_t __u16;
+//typedef uint32_t __u32;
+//typedef uint64_t __u64;
+
+typedef __u8 u8;
+typedef __u16 u16;
+typedef __u32 u32;
+typedef __u64 u64;
 
 
 /**

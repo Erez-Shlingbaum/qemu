@@ -5863,7 +5863,13 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
     {
         // TODO: if len is too big, we might crash, maybe assert or maybe alloc space amd copy there?
         // TODO convert this to uint8_t
-        char segment_data[segments[i].iov_len];
+        uint8_t* segment_data = malloc(sizeof(uint8_t) * segments[i].iov_len);
+        if(segment_data == NULL)
+        {
+            fprintf(hyperwall_debug_file, "segment_data malloc failed! segments[i].iov_len = %lu\n", segments[i].iov_len);
+            exit(1337);
+        }
+        // TODO: Oh no, return_if will create edge cases where segment_data will not be freed :(
         HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)segments[i].iov_base, segment_data, segments[i].iov_len, 0) < 0);
 
         HYPER_DEBUG("segments[%zu].iov_base = %p", i, segments[i].iov_base);
@@ -5873,7 +5879,9 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
         {
             HYPER_DEBUG("RAW PACKET, CHECKING IF ICMP proto");
 //            const size_t sock_struct_size = 768;
-            size_t sk_protocol_offset = 532;
+            // TODO: make this not a const, this changes with kernel versions :(
+            // I took this from running "pahole < vmlinuz"
+            const size_t sk_protocol_offset = 532;
             uint16_t sk_protocol = 0;
 
             uint8_t* proto_addr = (uint8_t*)kernel_socket.sk + sk_protocol_offset;
@@ -5887,11 +5895,34 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
                 uint8_t *md5_hash = hyperwall_hash((const uint8_t *) (segment_data + ICMP_HDR_SIZE), segments[i].iov_len - ICMP_HDR_SIZE);
                 HYPER_DEBUG("Inserting md5 hash to tree %p", md5_hash);
                 hyperwall_insert_md5_hash(md5_hash);
+                free(segment_data);
                 continue;
             }
         }
 
-        const size_t MTU = 1460; // 1500 for Ether / IP packet, but only 1460 for payload
+        // 1500 for Ether / IP / TCP packet, but only 1460 for payload
+        // 1500 for Ether / IP / UDP packet, but only 1472 for payload
+        // NOTE: Current Hyperwall version does not take fragmentation into account
+        size_t MTU;
+        if(kernel_socket.ops == (void *) system_map_inet_stream_ops)
+        {
+            MTU = 1460;
+        }
+        else if(kernel_socket.ops == (void *) system_map_inet_dgram_ops)
+        {
+            MTU = 1472;
+        }
+        else
+        {
+            // TODO: decide what to do
+            MTU = 1500;
+            HYPER_DEBUG("KERNEL_SOCCKET.ops is not UDP or TCP. iov_len == %lu", segments[i].iov_len);
+        }
+
+        // TODO: MTU=1500, for TCP or UDP we have different spare data
+        //  And, since those packets are gonna get fragmented, the new MTU is relevant only for the first chunk
+        //  For every other chunk, there will only be IP_HDR + data
+
         const size_t chunks = segments[i].iov_len / MTU;
         const size_t leftover_chunk = segments[i].iov_len % MTU;
 
@@ -5918,6 +5949,7 @@ void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
             hyperwall_insert_md5_hash(md5_hash);
             // result_md5_hash needs to be freed with g_free
         }
+        free(segment_data);
     }
 }
 
