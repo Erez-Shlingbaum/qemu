@@ -557,9 +557,6 @@ inc_tx_bcast_or_mcast_count(E1000State *s, const unsigned char *arr)
     }
 }
 
-// TODO: protect from ARP packets in kernel
-// TODO: move this code to qemu_send_packet()
-///
 /// \return true if packet OK, false if malicious
 static bool hyperwall_process_packet(const uint8_t *buffer, const size_t packet_size)
 {
@@ -600,7 +597,6 @@ static bool hyperwall_process_packet(const uint8_t *buffer, const size_t packet_
         {
             HYPER_DEBUG("isudp || istcp True");
 
-//            uint16_t l4_len = be16_to_cpu(l4hdr_info.hdr.udp.uh_ulen); // This minus sizeof(udp_header) = l5 size
             uint16_t l4_len = sizeof(udp_header);
             if(!isudp)
             {
@@ -688,12 +684,6 @@ static bool hyperwall_process_packet(const uint8_t *buffer, const size_t packet_
             return true;
         }
     }
-
-
-    // TODO: find max size to tree, and drop oldest hash or something
-    // TODO: free that hash
-    // TODO: DROP UDP and TCP packets that are not verified
-    // TODO: think if there is a possibly better protection, maybe when sending a packet
 
     HYPER_DEBUG("No hash was found!!!!");
     return false;
