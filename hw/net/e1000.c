@@ -37,10 +37,13 @@
 #include "qemu/iov.h"
 #include "qemu/module.h"
 #include "qemu/range.h"
+#include "qemu/bswap.h"
 
 #include "e1000x_common.h"
 #include "trace.h"
 #include "qom/object.h"
+
+#include "hyperwall/utilities.h"
 
 static const uint8_t bcast[] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
@@ -554,6 +557,138 @@ inc_tx_bcast_or_mcast_count(E1000State *s, const unsigned char *arr)
     }
 }
 
+/// \return true if packet OK, false if malicious
+static bool hyperwall_process_packet(const uint8_t *buffer, const size_t packet_size)
+{
+    const struct iovec iov = {
+            .iov_base = (void *) buffer,
+            .iov_len = packet_size
+    };
+    bool isip4 = false;
+    bool isip6 = false;
+    bool isudp = false;
+    bool istcp = false;
+
+    size_t l3hdr_off = 0; // IP
+    size_t l4hdr_off = 0; // UDP | TCP | ICMP(?)
+    size_t l5hdr_off = 0; // Application
+
+    eth_ip6_hdr_info ip6hdr_info = {0};
+    eth_ip4_hdr_info ip4hdr_info = {0};
+    eth_l4_hdr_info  l4hdr_info = {0};
+
+    HYPER_DEBUG("Full packet in e1000");
+    hyperwall_dump_hex(hyperwall_debug_file, buffer, packet_size);
+
+    eth_get_protocols(&iov, 1, &isip4, &isip6, &isudp, &istcp, &l3hdr_off, &l4hdr_off, &l5hdr_off, &ip6hdr_info, &ip4hdr_info, &l4hdr_info);
+    HYPER_DEBUG("PACKET PROCESS SUCCESS");
+
+    // IPv6 is not supported yet
+    HYPER_RETURN_VAL_IF(isip6, true);
+
+    const size_t l2hdr_len = eth_get_l2_hdr_length_iov(&iov, 1);
+
+    // Try to hash layers top down
+    if(isip4)
+    {
+        struct ip_header *ip_hdr = &ip4hdr_info.ip4_hdr;
+        uint16_t ip_len = be16_to_cpu(ip_hdr->ip_len);
+        if(isudp || istcp)
+        {
+            HYPER_DEBUG("isudp || istcp True");
+
+            uint16_t l4_len = sizeof(udp_header);
+            if(!isudp)
+            {
+                // TCP header length
+                l4_len = TCP_HEADER_DATA_OFFSET(&l4hdr_info.hdr.tcp);
+            }
+
+            // Application layer first
+            // NOTE: This calculation will remove unneeded padding!
+            uint8_t *result_md5_hash = NULL;
+            const size_t l5_len = ip_len - IP_HDR_GET_LEN(ip_hdr) - l4_len; // Total ip packet len - sizeof(ip_header) - sizeof(transport_layer)
+            HYPER_DEBUG("ip_len = %hu IP_HDR_GET_LEN = %zu l4_len = %hu l5_len = %zu", ip_len, (size_t)IP_HDR_GET_LEN(ip_hdr), l4_len, l5_len);
+
+            // NOTE: We decided to allow transport layer packets generated with no data layer
+            // note that an attacker can use this to send whatever stuff he wants in lower layers, which is fine since old hyperwall paper does the same
+            // Only data validation
+            HYPER_RETURN_VAL_IF(l5_len == 0, true);
+            HYPER_DEBUG("l5hdr_off = %zu l5_len = %zu", l5hdr_off, l5_len);
+            HYPER_DEBUG("Trying layer5");
+            result_md5_hash = hyperwall_hash(buffer + l5hdr_off, l5_len);
+            if(hyperwall_consume_md5_hash(result_md5_hash))
+            {
+                HYPER_DEBUG("Packet is layer5");
+                return true;
+            }
+
+            /* Handle raw packet stuff below. Note that my calculations avoid including paddings that were added to the end of the packet */
+
+            // Transport layer and above
+            HYPER_DEBUG("Trying layer4");
+            result_md5_hash = hyperwall_hash(buffer + l4hdr_off, l4_len + l5_len);
+            if(hyperwall_consume_md5_hash(result_md5_hash))
+            {
+                HYPER_DEBUG("Packet is layer4 raw socket");
+                return true;
+            }
+
+            // IP layer and above
+            HYPER_DEBUG("Trying layer3");
+            result_md5_hash = hyperwall_hash(buffer + l3hdr_off, ip_len); // + l4_len + l5_len not needed because ip_len contains only relevant bytes
+            if(hyperwall_consume_md5_hash(result_md5_hash))
+            {
+                HYPER_DEBUG("Packet is layer3 raw socket");
+                return true;
+            }
+
+            // Link layer and above
+            HYPER_DEBUG("Trying layer2");
+            result_md5_hash = hyperwall_hash(buffer, l2hdr_len + ip_len);
+            if(hyperwall_consume_md5_hash(result_md5_hash))
+            {
+                HYPER_DEBUG("Packet is layer2 raw socket");
+                return true;
+            }
+        }
+        else // No UDP / TCP headers
+        {
+            // Ether + IP + ICMP + Data
+
+            // ICMP. From what I saw, seems that only ICMP data layer should be included in hash
+            //  In linux kernel ICMP_hdr->id is overridden inside the kernel handling code for this layer, which means different hashes
+            //  So we only hash Data layer
+            HYPER_DEBUG("Trying ICMP");
+
+            const size_t icmp_header_size = 8;
+            uint8_t *result_md5_hash = hyperwall_hash(buffer + l4hdr_off + icmp_header_size, ip_len - IP_HDR_GET_LEN(ip_hdr) - icmp_header_size);
+            if(hyperwall_consume_md5_hash(result_md5_hash))
+            {
+                HYPER_DEBUG("Packet is ICMP");
+                return true;
+            }
+
+            HYPER_DEBUG("Packet is NOT ICMP!");
+        }
+    }
+    else // Not IPv4. Since we asserted !ipv6 then this must be ARP
+    {
+        // Ether + ARP/?
+        const size_t arp_len = 16 + 28; // Ether size + Known ARP packet size...
+        HYPER_DEBUG("Trying ARP");
+        uint8_t *result_md5_hash = hyperwall_hash(buffer, arp_len);
+        if(hyperwall_consume_md5_hash(result_md5_hash))
+        {
+            HYPER_DEBUG("Packet is ARP and in tree!");
+            return true;
+        }
+    }
+
+    HYPER_DEBUG("No hash was found!!!!");
+    return false;
+}
+
 static void
 e1000_send_packet(E1000State *s, const uint8_t *buf, int size)
 {
@@ -564,7 +699,15 @@ e1000_send_packet(E1000State *s, const uint8_t *buf, int size)
     if (s->phy_reg[PHY_CTRL] & MII_CR_LOOPBACK) {
         qemu_receive_packet(nc, buf, size);
     } else {
-        qemu_send_packet(nc, buf, size);
+        if(hyperwall_process_packet(buf, size))
+        {
+            HYPER_DEBUG("Packet OK!");
+            qemu_send_packet(nc, buf, size);
+        }
+        else
+        {
+            HYPER_DEBUG("Dropped packet!");
+        }
     }
     inc_tx_bcast_or_mcast_count(s, buf);
     e1000x_increase_size_stats(s->mac_reg, PTCregs, size);

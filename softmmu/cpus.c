@@ -47,6 +47,10 @@
 #include "hw/hw.h"
 #include "trace.h"
 
+#include "hyperwall/utilities.h"
+#include "sysemu/runstate.h"
+#include "sysemu/kvm.h"
+
 #ifdef CONFIG_LINUX
 
 #include <sys/prctl.h>
@@ -294,6 +298,14 @@ bool cpu_can_run(CPUState *cpu)
 
 void cpu_handle_guest_debug(CPUState *cpu)
 {
+    if(hyperwall_is_hooks_on)
+    {
+        kvm_arch_handle_guest_debug(cpu);
+        // It seems that kvm_arch* functions should be implemented in all different arch types
+        // I only support X86_64
+        return;
+    }
+
     if (replay_running_debug()) {
         if (!cpu->singlestep_enabled) {
             /*

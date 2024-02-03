@@ -58,6 +58,8 @@
 
 #include CONFIG_DEVICES
 
+#include "hyperwall/utilities.h"
+
 //#define DEBUG_KVM
 
 #ifdef DEBUG_KVM
@@ -3999,6 +4001,13 @@ static int kvm_get_msrs(X86CPU *cpu)
             break;
         case MSR_LSTAR:
             env->lstar = msrs[i].data;
+            if(env->lstar != 0 && hyperwall_was_lstar_init == false)
+            {
+                hyperwall_lstar = env->lstar;
+                hyperwall_was_lstar_init = true;
+                fprintf(hyperwall_debug_file, "MSR_LSTAR = %lu\n", hyperwall_lstar);
+                hyperwall_hook_init();
+            }
             break;
 #endif
         case MSR_IA32_TSC:
@@ -5725,4 +5734,184 @@ void kvm_arch_accel_class_init(ObjectClass *oc)
 void kvm_set_max_apic_id(uint32_t max_apic_id)
 {
     kvm_vm_enable_cap(kvm_state, KVM_CAP_MAX_VCPU_ID, 0, max_apic_id);
+}
+
+/* Hyperwall stuff */
+void kvm_arch_handle_arp_xmit_bp(CPUState *cpu)
+{
+    HYPER_DEBUG("kvm_arch_handle_arp_xmit_bp");
+
+    X86CPU *x86_cpu = X86_CPU(cpu);
+    CPUX86State *env = &x86_cpu->env;
+
+    // Advance the instruction point over the breakpoint
+    // Note that this specific breakpoint is on NOPs so there is no need to emulate anything
+    cpu_synchronize_state(cpu);
+    cpu_set_pc(cpu, env->eip + 5);
+
+    struct sk_buff kernel_sk_buff = {0};
+    /*
+     * In X64 function parameters are passed 1-RDI 2-RSI 3-RDX 4-RCX 5-R8 6-R9
+     * */
+    // Read EDI register, which will contains the skb_buffer
+    HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, env->regs[R_EDI], &kernel_sk_buff, sizeof(kernel_sk_buff), 0) < 0);
+    HYPER_DEBUG("PARSED ARP from skb at %lu", env->regs[R_EDI]);
+
+
+    HYPER_DEBUG("kernel_sk_buff.data_len = %u", kernel_sk_buff.data_len);
+    HYPER_DEBUG("kernel_sk_buff.data = %p", kernel_sk_buff.data);
+    HYPER_DEBUG("kernel_sk_buff.tail = %u", kernel_sk_buff.tail);
+
+    hyperwall_dump_hex(hyperwall_debug_file, &kernel_sk_buff, sizeof(kernel_sk_buff));
+
+    // kernel_sk_buff.data - kernel_sk_buff.tail == boundaries of data!
+    uint8_t buffer[kernel_sk_buff.tail];
+    HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)kernel_sk_buff.data, buffer, kernel_sk_buff.tail, 0) < 0);
+    HYPER_DEBUG("ARP--> dump of data->tail");
+    hyperwall_dump_hex(hyperwall_debug_file, buffer, kernel_sk_buff.tail);
+
+    // Calculate MD5
+    uint8_t *result_md5_hash = NULL;
+    size_t hash_len = 0;
+    Error *error = NULL;
+
+    // Allocated result_md5_hash pointer, should be freed with g_free
+    HYPER_RETURN_IF(qcrypto_hash_bytes(QCRYPTO_HASH_ALG_MD5, (const char *) buffer, kernel_sk_buff.tail, &result_md5_hash, &hash_len, &error) < 0);
+
+    HYPER_DEBUG("Inserting ARP md5 hash to tree %p\n", result_md5_hash);
+    hyperwall_insert_md5_hash(result_md5_hash);
+    // result_md5_hash needs to be freed with g_free
+}
+
+void kvm_arch_handle_sock_sendmsg_bp(CPUState *cpu)
+{
+    X86CPU *x86_cpu = X86_CPU(cpu);
+    CPUX86State *env = &x86_cpu->env;
+
+    // Advance the instruction point over the breakpoint
+    // Note that this specific breakpoint is on NOPs so there is no need to emulate anything
+    cpu_synchronize_state(cpu);
+    cpu_set_pc(cpu, env->eip + 5);
+
+    /*
+     * In X64 function parameters are passed 1-RDI 2-RSI 3-RDX 4-RCX 5-R8 6-R9
+     * */
+    struct kernel_socket kernel_socket = {0};
+    struct kernel_msghdr msg_hdr = {0};
+
+    // Read EDI register, which will contains the kernel socket struct
+    HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, env->regs[R_EDI], &kernel_socket, sizeof(kernel_socket), 0) < 0);
+
+    // Verify that ths udp && tcp ops pointer is the same in QEMU VM and in the one we got from env variable
+    // If it is the same, then it is also a TCP/UDP packet of course, so we process it.
+    // Ignore packets that are not udp / tcp / raw socket
+    if (kernel_socket.ops != (void *) system_map_inet_dgram_ops &&
+        kernel_socket.ops != (void *) system_map_inet_stream_ops &&
+        kernel_socket.ops != (void *) system_map_inet_sockraw_ops &&
+        kernel_socket.ops != (void *) system_map_packet_ops)
+    {
+        return;
+    }
+
+    HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, env->regs[R_ESI], &msg_hdr, sizeof(msg_hdr), 0) < 0);
+    HYPER_DEBUG("msg_hdr.msg_iter.count = %lu\n", msg_hdr.msg_iter.nr_segs);
+
+    struct kernel_iovec segments[msg_hdr.msg_iter.nr_segs];
+    HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)msg_hdr.msg_iter.iov, segments, sizeof(struct kernel_iovec) * msg_hdr.msg_iter.nr_segs, 0) < 0);
+
+    // For each segment, read to buffer and hash it
+    for (size_t i = 0; i < msg_hdr.msg_iter.nr_segs; ++i)
+    {
+        uint8_t* segment_data = malloc(sizeof(uint8_t) * segments[i].iov_len);
+        if(segment_data == NULL)
+        {
+            fprintf(hyperwall_debug_file, "segment_data malloc failed! segments[i].iov_len = %lu\n", segments[i].iov_len);
+            exit(1337);
+        }
+        HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)segments[i].iov_base, segment_data, segments[i].iov_len, 0) < 0);
+
+        HYPER_DEBUG("segments[%zu].iov_base = %p", i, segments[i].iov_base);
+
+        if(kernel_socket.ops == (void*)system_map_inet_sockraw_ops)
+        {
+            HYPER_DEBUG("RAW PACKET, CHECKING IF ICMP proto");
+            // TODO: make this not a const, this changes with kernel versions :(
+            // I took this from running "pahole < vmlinuz"
+            const size_t sk_protocol_offset = 532;
+            uint16_t sk_protocol = 0;
+
+            uint8_t* proto_addr = (uint8_t*)kernel_socket.sk + sk_protocol_offset;
+            HYPER_RETURN_IF(cpu_memory_rw_debug(cpu, (target_ulong)proto_addr, &sk_protocol, sizeof(sk_protocol), 0) < 0);
+            HYPER_DEBUG("PROTO = %u", sk_protocol);
+
+            if(sk_protocol == IPPROTO_ICMP) // 1
+            {
+                HYPER_DEBUG("ICMP!!!");
+                const size_t ICMP_HDR_SIZE = 8;
+                uint8_t *md5_hash = hyperwall_hash((const uint8_t *) (segment_data + ICMP_HDR_SIZE), segments[i].iov_len - ICMP_HDR_SIZE);
+                HYPER_DEBUG("Inserting md5 hash to tree %p", md5_hash);
+                hyperwall_insert_md5_hash(md5_hash);
+                free(segment_data);
+                continue;
+            }
+        }
+
+        // 1500 for Ether / IP / TCP packet, but only 1460 for payload
+        // 1500 for Ether / IP / UDP packet, but only 1472 for payload
+        // NOTE: Current code does not take fragmentation into account durring tests
+        size_t MTU = 1500;
+        if(kernel_socket.ops == (void *) system_map_inet_stream_ops)
+        {
+            MTU = 1460;
+        }
+        else if(kernel_socket.ops == (void *) system_map_inet_dgram_ops)
+        {
+            MTU = 1472;
+        }
+
+        const size_t chunks = segments[i].iov_len / MTU;
+        const size_t leftover_chunk = segments[i].iov_len % MTU;
+
+        for (size_t j = 0; j < chunks; ++j)
+        {
+            HYPER_DEBUG("MTU chunk number %zu", j);
+            const uint8_t *chunk_ptr = (const uint8_t *) segment_data + MTU * j;
+            uint8_t *md5_hash = hyperwall_hash(chunk_ptr, MTU);
+
+            // Try to see which packets do I expect in e1000 later
+            hyperwall_dump_hex(hyperwall_debug_file, chunk_ptr, MTU);
+
+            HYPER_DEBUG("Inserting md5 hash to tree %p", md5_hash);
+            hyperwall_insert_md5_hash(md5_hash);
+            // result_md5_hash needs to be freed with g_free
+        }
+        if (leftover_chunk != 0)
+        {
+            HYPER_DEBUG("leftover_chunk: %zu", leftover_chunk);
+            const uint8_t *chunk_ptr = (const uint8_t *) segment_data + MTU * chunks;
+            uint8_t *md5_hash = hyperwall_hash(chunk_ptr, leftover_chunk);
+            // Try to see which packets do I expect in e1000 later
+            hyperwall_dump_hex(hyperwall_debug_file, chunk_ptr, leftover_chunk);
+            HYPER_DEBUG("Inserting md5 hash to tree %p", md5_hash);
+            hyperwall_insert_md5_hash(md5_hash);
+            // result_md5_hash needs to be freed with g_free
+        }
+        free(segment_data);
+    }
+}
+
+void kvm_arch_handle_guest_debug(CPUState *cpu)
+{
+    X86CPU *x86_cpu = X86_CPU(cpu);
+    CPUX86State *env = &x86_cpu->env;
+    cpu_synchronize_state(cpu);
+
+    if(env->eip == system_map_sock_sendmsg)
+    {
+        kvm_arch_handle_sock_sendmsg_bp(cpu);
+    }
+    else if(env->eip == system_map_arp_xmit)
+    {
+        kvm_arch_handle_arp_xmit_bp(cpu);
+    }
 }
