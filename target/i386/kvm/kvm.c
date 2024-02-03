@@ -5118,7 +5118,6 @@ static int kvm_handle_debug(X86CPU *cpu,
         }
     } else if (kvm_find_sw_breakpoint(cs, arch_info->pc)) {
         ret = EXCP_DEBUG;
-        // Hyperwall: This code is reached from our BP
     }
     if (ret == 0) {
         cpu_synchronize_state(cs);
@@ -5350,7 +5349,6 @@ int kvm_arch_handle_exit(CPUState *cs, struct kvm_run *run)
         break;
     case KVM_EXIT_DEBUG:
         DPRINTF("kvm_exit_debug\n");
-//        fprintf(hyperwall_debug_file, "kvm_exit_debug\n");
         qemu_mutex_lock_iothread();
         ret = kvm_handle_debug(cpu, &run->debug.arch);
         qemu_mutex_unlock_iothread();

@@ -817,7 +817,6 @@ process_tx_desc(E1000State *s, struct e1000_tx_desc *dp)
     if (e1000x_vlan_enabled(s->mac_reg) &&
         e1000x_is_vlan_txd(txd_lower) &&
         (tp->cptse || txd_lower & E1000_TXD_CMD_EOP)) {
-        HYPER_DEBUG("VLAN IS ENABLED STUFF!");
         tp->vlan_needed = 1;
         stw_be_p(tp->vlan_header,
                       le16_to_cpu(s->mac_reg[VET]));
