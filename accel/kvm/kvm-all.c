@@ -2976,15 +2976,6 @@ int kvm_cpu_exec(CPUState *cpu)
             break;
         case KVM_EXIT_MMIO:
             DPRINTF("handle_mmio\n");
-            // TODO: Using information from e1000 code, find a way to reach into VM memory and registers
-            /***************************************/
-            // Not generic at all, there's probably a better way to do this
-            // X86CPU *x86_cpu = X86_CPU(cpu);
-            // target_ulong num = x86_cpu->env.regs[R_ESP];
-            // fprintf(stderr, "ESP = %llx\n", (unsigned long long)num); // This works, but prints too much to screen
-            // cpu->kvm_run->s.regs.regs.rsp // Not sure what is the difference between this and env.regs[R_ESP]. This is always 0 for some reason :(
-            /***************************************/
-
             /* Called outside BQL */
             address_space_rw(&address_space_memory,
                              run->mmio.phys_addr, attrs,
